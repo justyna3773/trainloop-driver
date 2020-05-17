@@ -1,0 +1,3 @@
+#!/bin/bash
+
+/usr/bin/mosh --ssh="ssh -i training-identity.pem" $@

@@ -36,3 +36,6 @@ src
 .cache
 
 MUJOCO_LOG.TXT
+
+# To avoid adding pem files to git
+*.pem
