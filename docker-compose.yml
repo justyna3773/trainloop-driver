@@ -1,0 +1,20 @@
+version: '3'
+services:
+  simulator: 
+    restart: "no"
+    image: pkoperek/cloudsimplus-gateway:1.7
+    expose: 
+      - "25333"
+
+  driver:
+    image: pkoperek/trainloop-driver:1.0
+    environment:
+      - CLOUDSIM_GATEWAY_HOST=simulator
+      - CLOUDSIM_GATEWAY_PORT=25333
+    #command: ["trainloop", "--test", "--simulator_speedup", "10", "--save_path", "/output_model"]
+    command: ["trainloop", "--simulator_speedup", "10", "--save_path", "/output_model", "--mips_per_core", "1250", "--workload_file", "/input_workloads/LLNL-Atlas-2006-2.1-cln.swf"]
+    depends_on:
+      - simulator
+    volumes:
+      - "./output_model:/output_model"
+      - "./input_workloads:/input_workloads"
