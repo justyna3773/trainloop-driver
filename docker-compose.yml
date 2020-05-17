@@ -2,7 +2,7 @@ version: '3'
 services:
   simulator: 
     restart: "no"
-    image: pkoperek/cloudsimplus-gateway:1.7
+    image: pkoperek/cloudsimplus-gateway:1.6
     expose: 
       - "25333"
 
