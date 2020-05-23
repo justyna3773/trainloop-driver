@@ -20,16 +20,8 @@ from driver.common.swf_jobs import read_jobs_from_file
 from driver import logger
 from importlib import import_module
 
-test_workload = [
-    {
-        'jobId': 1,
-        'submissionDelay': 10,
-        'mi': 500000,
-        'numberOfCores': 1,
-    }
-]
 
-test_workload2 = [
+test_workload = [
     {
         "jobId": 1441,
         "submissionDelay": 507,
@@ -163,6 +155,7 @@ def build_env(args):
         'initial_vm_count': str(initial_vm_count),
         'jobs_as_json': json.dumps(workload),
         'simulation_speedup': str(simulator_speedup),
+        'split_large_jobs': 'true',
     }
 
     flatten_dict_observations = alg not in {'her'}
