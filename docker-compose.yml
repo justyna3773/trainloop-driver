@@ -2,19 +2,36 @@ version: '3'
 services:
   simulator: 
     restart: "no"
-    image: pkoperek/cloudsimplus-gateway:1.6
+    image: pkoperek/cloudsimplus-gateway:1.6.1
+    environment:
+      - DATACENTER_HOSTS_CNT=16
     expose: 
       - "25333"
 
+  postgres:
+    image: postgres:10
+    environment:
+      - POSTGRES_USER=dnnevo
+      - POSTGRES_PASSWORD=dnnevo
+      - POSTGRES_DB=dnnevo
+    volumes:
+      - ./ignored/pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+        
   driver:
     image: pkoperek/trainloop-driver:1.0
     environment:
       - CLOUDSIM_GATEWAY_HOST=simulator
       - CLOUDSIM_GATEWAY_PORT=25333
+      - ITERATION_LENGTH_IN_S=10
     #command: ["trainloop", "--test", "--simulator_speedup", "10", "--save_path", "/output_model"]
-    command: ["trainloop", "--simulator_speedup", "10", "--save_path", "/output_model", "--mips_per_core", "1250", "--workload_file", "/input_workloads/LLNL-Atlas-2006-2.1-cln.swf"]
+    #command: ["trainloop", "--simulator_speedup", "10", "--save_path", "/output_model", "--mips_per_core", "1250", "--workload_file", "/input_workloads/LLNL-Atlas-2006-2.1-cln.swf"]
+    # Experiment 1
+    command: ["trainloop", "--simulator_speedup", "1000", "--save_path", "/output_models", "--mips_per_core", "3600", "--env", "ThreeSizeAppEnv-v0", "--loop"]
     depends_on:
       - simulator
+      - postgres
     volumes:
       - "./output_model:/output_model"
       - "./input_workloads:/input_workloads"
