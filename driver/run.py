@@ -152,7 +152,9 @@ def build_env(args):
     get_session(config=config)
 
     env_kwargs = {
-        'initial_vm_count': str(initial_vm_count),
+        'initial_s_vm_count': str(initial_vm_count),
+        'initial_m_vm_count': str(initial_vm_count),
+        'initial_l_vm_count': str(initial_vm_count),
         'jobs_as_json': json.dumps(workload),
         'simulation_speedup': str(simulator_speedup),
         'split_large_jobs': 'true',
@@ -268,7 +270,28 @@ def main():
     if args.play:
         logger.log("Running trained model")
         obs = env.reset()
+        test_model(model, env)
 
+    env.close()
+    return model
+
+
+def training_loop(args, unknown_args):
+    logger.log('Training loop: starting...')
+    extra_args = parse_cmdline_kwargs(unknown_args)
+    logger.log('Training loop: parsed args...')
+
+    base_save_path = osp.expanduser(args.save_path)
+    logger.log(f'Training loop: saving models in: {base_save_path}')
+
+    ITERATION_LENGTH_IN_S = int(os.getenv('ITERATION_LENGTH_IN_S', '300'))
+    iterations = 0
+    running = True
+    while running:
+        logger.debug(f'Training loop: iteration {iterations}')
+        start = time.time()
+
+        model, env = train(args, extra_args)
         state = model.initial_state if hasattr(model, 'initial_state') else None
         dones = np.zeros((1,))
 
