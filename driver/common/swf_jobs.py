@@ -50,7 +50,7 @@ class SwfJob(object):
         }
 
 
-def read_jobs_from_file(fpath, mips_per_core):
+def get_jobs_from_file(fpath, mips_per_core):
     jobs = []
 
     mips_per_core_int = int(mips_per_core)

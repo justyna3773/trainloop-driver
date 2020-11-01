@@ -9,3 +9,6 @@ matplotlib
 pandas
 tensorflow < 2
 git+https://github.com/pkoperek/gym_cloudsimplus#egg=gym_cloudsimplus
+sqlalchemy
+psycopg2-binary
+requests
