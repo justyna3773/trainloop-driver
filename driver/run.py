@@ -4,7 +4,6 @@ import math
 import os.path as osp
 import gym
 import gym_cloudsimplus
-from collections import defaultdict
 import tensorflow as tf
 import numpy as np
 import json
@@ -12,7 +11,7 @@ import requests
 import base64
 import datetime
 
-
+from collections import defaultdict
 from driver.common.vec_env import VecEnv
 from driver.common.cmd_util import (
     common_arg_parser,
@@ -24,6 +23,10 @@ from driver.common.swf_jobs import get_jobs_from_file
 from driver.common.db_jobs import get_cores_count_at, get_jobs_since
 from driver import logger
 from importlib import import_module
+
+
+oracle_update_url = sys.getenv("ORACLE_UPDATE_URL",
+                               "http://oracle:8080/update")
 
 
 test_workload = [
