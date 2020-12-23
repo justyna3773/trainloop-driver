@@ -109,11 +109,13 @@ def cnn(**conv_kwargs):
         return nature_cnn(X, **conv_kwargs)
     return network_fn
 
+
 @register("impala_cnn")
 def impala_cnn(**conv_kwargs):
     def network_fn(X):
         return build_impala_cnn(X)
     return network_fn
+
 
 @register("cnn_small")
 def cnn_small(**conv_kwargs):
@@ -127,6 +129,7 @@ def cnn_small(**conv_kwargs):
         h = activ(fc(h, 'fc1', nh=128, init_scale=np.sqrt(2)))
         return h
     return network_fn
+
 
 @register("lstm")
 def lstm(nlstm=128, layer_norm=False):
