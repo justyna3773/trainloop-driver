@@ -20,6 +20,7 @@ services:
     volumes:
       - ./ignored/samm_pgdata:/storage
       - ./db_init/sammdb.sql:/docker-entrypoint-initdb.d/sammdb.sql
+      - ./db_init/synthetic_metrics.sql:/docker-entrypoint-initdb.d/synthetic_metrics.sql
     ports:
       - "5432:5432"
 
