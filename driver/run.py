@@ -136,6 +136,11 @@ def train(args,
     return model, env
 
 
+def adjust_submission_delay(job, start_timestamp):
+    job['submissionDelay'] -= start_timestamp
+    return job
+
+
 def get_workload(args, extra_args):
     if args.test:
         logger.info('*** TEST MODE ***')
@@ -156,7 +161,12 @@ def get_workload(args, extra_args):
     if args.continuous_mode:
         training_timestamp = extra_args['training_timestamp']
         jobs = get_jobs_since(training_timestamp)
-        return jobs
+        time_adjusted = [
+            adjust_submission_delay(job, training_timestamp)
+            for job
+            in jobs
+        ]
+        return time_adjusted
 
     raise RuntimeError('Please use the test, workload_file or '
                        'continuous mode options')
