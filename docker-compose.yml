@@ -33,6 +33,7 @@ services:
     volumes:
       - ./ignored/dnnevo_pgdata:/storage
       - ./db_init/dnnevodb.sql:/docker-entrypoint-initdb.d/dnnevodb.sql
+      - ./db_init/synthetic_workload.sql:/docker-entrypoint-initdb.d/synthetic_workload.sql
     ports:
       - "5433:5432"
         
