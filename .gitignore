@@ -1,3 +1,7 @@
+*.pem*
+aws-creds
+output_model/**
+ignored/**
 .direnv
 *.swp
 *.pyc

@@ -28,3 +28,32 @@ cd ..
 rm -rf mosh*
 ```
 
+### Accessing dumps of data from SAMM and dnnevo
+
+```
+version: '3'
+services:
+  dnnevodb:
+    image: postgres:10
+    environment:
+      - POSTGRES_USER=samm
+      - POSTGRES_PASSWORD=samm
+      - POSTGRES_DB=samm
+      - PGDATA=/storage
+    volumes:
+      - ./ignored/pgdata:/storage
+    ports:
+      - "5432:5432"
+
+  sammdb:
+    image: postgres:11
+    environment:
+      - POSTGRES_USER=samm
+      - POSTGRES_PASSWORD=samm
+      - POSTGRES_DB=samm
+      - PGDATA=/storage
+    volumes:
+      - ./ignored/sammdata:/storage
+    ports:
+      - "5432:5432"
+```
