@@ -354,6 +354,9 @@ def training_loop(args, extra_args):
     model = None
     env = None
 
+    date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
+    base_save_path = os.path.join(base_save_path, date_tag)
+
     while running:
         logger.debug(f'Training loop: iteration {iterations}')
 
@@ -367,6 +370,8 @@ def training_loop(args, extra_args):
 
         cores_count = get_cores_count_at(training_timestamp)
 
+        logger.log(f'Using training data starting at: {training_timestamp}')
+
         if all([v is not None for k, v in cores_count.items()]):
             updated_extra_args.update({
                 'initial_s_vm_count': math.floor(cores_count['s_cores'][0]/2),
@@ -375,9 +380,11 @@ def training_loop(args, extra_args):
             })
 
             model, env = train(args,
-                            updated_extra_args,
-                            old_env=env,
-                            old_model=model)
+                               updated_extra_args,
+                               old_env=env,
+                               old_model=model)
+            model_save_path = f'{base_save_path}_{iterations}.bin'
+            model.save(model_save_path)
             new_policy_total_reward = test_model(model, env)
             old_policy_total_reward = calculate_reward(args.core_iteration_cost,
                                                        cores_count)
