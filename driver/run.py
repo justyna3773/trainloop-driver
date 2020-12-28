@@ -1,4 +1,5 @@
 import sys
+import os
 import re
 import math
 import os.path as osp
@@ -10,6 +11,7 @@ import json
 import requests
 import base64
 import datetime
+import time
 
 from collections import defaultdict
 from driver.common.vec_env import VecEnv
@@ -20,13 +22,17 @@ from driver.common.cmd_util import (
 )
 from driver.common.tf_util import get_session
 from driver.common.swf_jobs import get_jobs_from_file
-from driver.common.db_jobs import get_cores_count_at, get_jobs_since
+from driver.common.db_jobs import (
+    get_cores_count_at,
+    get_jobs_since,
+    init_dbs,
+)
 from driver import logger
 from importlib import import_module
 
 
-oracle_update_url = sys.getenv("ORACLE_UPDATE_URL",
-                               "http://oracle:8080/update")
+oracle_update_url = os.getenv("ORACLE_UPDATE_URL",
+                              "http://oracle:8080/update")
 
 
 test_workload = [
@@ -279,7 +285,7 @@ def parse_cmdline_kwargs(args):
 
 def configure_logger(log_path, **kwargs):
     if log_path is not None:
-        logger.configure(log_path)
+        logger.configure(log_path, **kwargs)
     else:
         logger.configure(**kwargs)
 
@@ -333,6 +339,10 @@ def update_oracle_policy(model):
 
 
 def training_loop(args, extra_args):
+    logger.log('Initializing databases')
+    init_dbs()
+    logger.log('Initialized databases')
+
     logger.log('Training loop: starting...')
 
     base_save_path = osp.expanduser(args.save_path)
@@ -355,23 +365,28 @@ def training_loop(args, extra_args):
         }
         updated_extra_args.update(extra_args)
 
-        cores_count = get_cores_count_after(training_timestamp)
-        updated_extra_args.update({
-            'initial_s_vm_count': math.floor(cores_count['s_cores'][0]/2),
-            'initial_m_vm_count': math.floor(cores_count['m_cores'][0]/2),
-            'initial_l_vm_count': math.floor(cores_count['l_cores'][0]/2),
-        })
+        cores_count = get_cores_count_at(training_timestamp)
 
-        model, env = train(args,
-                           updated_extra_args,
-                           old_env=env,
-                           old_model=model)
-        new_policy_total_reward = test_model(model, env)
-        old_policy_total_reward = calculate_reward(args.core_iteration_cost,
-                                                   cores_count)
+        if all([v is not None for k, v in cores_count.items()]):
+            updated_extra_args.update({
+                'initial_s_vm_count': math.floor(cores_count['s_cores'][0]/2),
+                'initial_m_vm_count': math.floor(cores_count['m_cores'][0]/2),
+                'initial_l_vm_count': math.floor(cores_count['l_cores'][0]/2),
+            })
 
-        if new_policy_total_reward > old_policy_total_reward:
-            update_oracle_policy(model)
+            model, env = train(args,
+                            updated_extra_args,
+                            old_env=env,
+                            old_model=model)
+            new_policy_total_reward = test_model(model, env)
+            old_policy_total_reward = calculate_reward(args.core_iteration_cost,
+                                                       cores_count)
+
+            if new_policy_total_reward > old_policy_total_reward:
+                update_oracle_policy(model)
+        else:
+            logger.log(f'Cannot initialize vm counts - not enough data '
+                       f'available. Cores count: {cores_count}')
 
         end = time.time()
         iteration_len = end - start
@@ -405,7 +420,7 @@ def main():
     args = sys.argv
     arg_parser = common_arg_parser()
     args, unknown_args = arg_parser.parse_known_args(args)
-    configure_logger(args.log_path)
+    configure_logger(args.log_path, format_strs=['stdout', 'log'])
     extra_args = parse_cmdline_kwargs(unknown_args)
 
     if args.continuous_mode:

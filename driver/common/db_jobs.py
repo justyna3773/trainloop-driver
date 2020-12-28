@@ -10,11 +10,13 @@ from sqlalchemy import (
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
+from driver import logger
+
 import os
 
 
 MONITORING_DB_USERNAME = os.getenv('MONITORING_DB_USERNAME', 'samm')
-MONITORING_DB_PASSWORD = os.getenv('MONITORING_DB_PASSWORD', 'sammpassword')
+MONITORING_DB_PASSWORD = os.getenv('MONITORING_DB_PASSWORD', 'samm')
 MONITORING_DB_PORT = os.getenv('MONITORING_DB_PORT', '5432')
 MONITORING_DB_HOST = os.getenv('MONITORING_DB_HOST', 'sammdb')
 MONITORING_DB_NAME = os.getenv('MONITORING_DB_NAME', 'samm')
@@ -126,15 +128,21 @@ def _create_session_for_uri(uri):
 def init_jobs_db():
     global _session_jobs
 
-    uri = get_jobs_db_uri()
-    _session_jobs = _create_session_for_uri(uri)
+    if _session_jobs is None:
+        logger.info('Initializing jobs db')
+        uri = get_jobs_db_uri()
+        _session_jobs = _create_session_for_uri(uri)
+        logger.info('Initialized jobs db')
 
 
 def init_monitoring_db():
     global _session_monitoring
 
-    uri = get_monitoring_db_uri()
-    _session_monitoring = _create_session_for_uri(uri)
+    if _session_monitoring is None:
+        logger.info('Initializing monitoring db')
+        uri = get_monitoring_db_uri()
+        _session_monitoring = _create_session_for_uri(uri)
+        logger.info('Initialized monitoring db')
 
 
 def init_dbs():

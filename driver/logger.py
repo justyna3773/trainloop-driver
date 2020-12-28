@@ -16,6 +16,11 @@ ERROR = 40
 
 DISABLED = 50
 
+
+def now():
+    return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f: ')
+
+
 class KVWriter(object):
     def writekvs(self, kvs):
         raise NotImplementedError
@@ -63,6 +68,7 @@ class HumanOutputFormat(KVWriter, SeqWriter):
                 ' ' * (valwidth - len(val)),
             ))
         lines.append(dashes)
+        self.file.write(now())
         self.file.write('\n'.join(lines) + '\n')
 
         # Flush the output to the file
@@ -74,6 +80,7 @@ class HumanOutputFormat(KVWriter, SeqWriter):
 
     def writeseq(self, seq):
         seq = list(seq)
+        self.file.write(now())
         for (i, elem) in enumerate(seq):
             self.file.write(elem)
             if i < len(seq) - 1: # add space unless this is the last one
@@ -84,6 +91,9 @@ class HumanOutputFormat(KVWriter, SeqWriter):
     def close(self):
         if self.own_file:
             self.file.close()
+
+    def __repr__(self):
+        return f'<HumanOutputFormat({self.file.name})>'
 
 class JSONOutputFormat(KVWriter):
     def __init__(self, filename):
@@ -378,8 +388,18 @@ def configure(dir=None, format_strs=None, comm=None, log_suffix=''):
     if dir is None:
         dir = osp.join(tempfile.gettempdir(),
             datetime.datetime.now().strftime("openai-%Y-%m-%d-%H-%M-%S-%f"))
+
+    dir = osp.join(dir, datetime.datetime.today().strftime("%Y-%m-%d."))
     assert isinstance(dir, str)
     dir = os.path.expanduser(dir)
+
+    day_try = 1
+    candidate_dir = dir + str(day_try)
+    while os.path.exists(candidate_dir):
+        day_try += 1
+        candidate_dir = dir + str(day_try)
+
+    dir = candidate_dir
     os.makedirs(os.path.expanduser(dir), exist_ok=True)
 
     rank = get_rank_without_mpi_import()
@@ -391,12 +411,16 @@ def configure(dir=None, format_strs=None, comm=None, log_suffix=''):
             format_strs = os.getenv('OPENAI_LOG_FORMAT', 'stdout,log,csv').split(',')
         else:
             format_strs = os.getenv('OPENAI_LOG_FORMAT_MPI', 'log').split(',')
+
+    print(f'format_strs: {format_strs}')
     format_strs = filter(None, format_strs)
     output_formats = [make_output_format(f, dir, log_suffix) for f in format_strs]
+    for i in format_strs:
+        print(f'format_strs: {i}')
 
     Logger.CURRENT = Logger(dir=dir, output_formats=output_formats, comm=comm)
     if output_formats:
-        log('Logging to %s'%dir)
+        log(f'Logging to {dir} in formats {output_formats}')
 
 def _configure_default_logger():
     configure()

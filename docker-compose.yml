@@ -2,36 +2,69 @@ version: '3'
 services:
   simulator: 
     restart: "no"
-    image: pkoperek/cloudsimplus-gateway:1.6.1
+    image: pkoperek/cloudsimplus-gateway:1.8.1
     environment:
-      - DATACENTER_HOSTS_CNT=16
+      # sets the number of hosts in the datacenter
+      # we assume that every host can hold 2+4+8 CPUs (so 1 vm of each type)
+      - DATACENTER_HOSTS_CNT=18
     expose: 
       - "25333"
 
-  postgres:
+  sammdb:
+    image: postgres:10
+    environment:
+      - POSTGRES_USER=samm
+      - POSTGRES_PASSWORD=samm
+      - POSTGRES_DB=samm
+      - PGDATA=/storage
+    volumes:
+      - ./ignored/samm_pgdata:/storage
+      - ./db_init/sammdb.sql:/docker-entrypoint-initdb.d/sammdb.sql
+    ports:
+      - "5432:5432"
+
+  dnnevodb:
     image: postgres:10
     environment:
       - POSTGRES_USER=dnnevo
       - POSTGRES_PASSWORD=dnnevo
       - POSTGRES_DB=dnnevo
+      - PGDATA=/storage
     volumes:
-      - ./ignored/pgdata:/var/lib/postgresql/data
+      - ./ignored/dnnevo_pgdata:/storage
+      - ./db_init/dnnevodb.sql:/docker-entrypoint-initdb.d/dnnevodb.sql
     ports:
-      - "5432:5432"
+      - "5433:5432"
         
   driver:
     image: pkoperek/trainloop-driver:1.0
     environment:
       - CLOUDSIM_GATEWAY_HOST=simulator
       - CLOUDSIM_GATEWAY_PORT=25333
-      - ITERATION_LENGTH_IN_S=10
-    #command: ["trainloop", "--test", "--simulator_speedup", "10", "--save_path", "/output_model"]
-    #command: ["trainloop", "--simulator_speedup", "10", "--save_path", "/output_model", "--mips_per_core", "1250", "--workload_file", "/input_workloads/LLNL-Atlas-2006-2.1-cln.swf"]
-    # Experiment 1
-    command: ["trainloop", "--simulator_speedup", "1000", "--save_path", "/output_models", "--mips_per_core", "3600", "--env", "ThreeSizeAppEnv-v0", "--loop"]
+    # Parameters from 10MM
+    command: ["trainloop", 
+              "--env", "ThreeSizeAppEnv-v0", 
+              "--simulator_speedup", "60", 
+              "--save_path", "/output_models", 
+              "--mips_per_core", "3600", 
+              "--seed", "1",
+              "--mips_per_core", "4400",
+              "--log_path", "/logs",
+              "--vf_coef", "0.0005",
+              "--lam", "0.97",
+              "--gamma", "0.99",
+              "--cliprange", "0.2",
+              "--num_timesteps", "500000",    # this needs to be adjusted to the amount of data fetched from the db; 500k should be enough to train from fresh, but not too long in wall clock time
+              "--nsteps", "250",
+              "--lr", "0.0003",
+              "--network", "lstm",
+              "--iteration_length_s", "900",  # 15 minutes per iteration
+              "--continuous_mode"]
     depends_on:
       - simulator
-      - postgres
+      - sammdb
+      - dnnevodb
     volumes:
       - "./output_model:/output_model"
       - "./input_workloads:/input_workloads"
+      - "./logs:/logs"
