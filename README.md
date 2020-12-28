@@ -3,8 +3,8 @@
 ### Logging in to the EC2 machine
 
 ```
-ssh -i training-identity.pem ec2-user@ec2-54-224-64-153.compute-1.amazonaws.com
-mosh ec2-user@ec2-54-224-64-153.compute-1.amazonaws.com
+ssh -i training-identity.pem ec2-user@<EC2 VM>
+mosh ec2-user@<EC2 VM>
 ```
 
 ### Setting up the EC2 machine
@@ -27,3 +27,4 @@ sudo make install
 cd ..
 rm -rf mosh*
 ```
+
