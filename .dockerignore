@@ -1,2 +1,13 @@
 **/__pycache__
 ignored/
+.direnv
+.aliases
+output_model
+input_workloads
+**.pem
+**.pub
+**.egg-info
+Makefile
+docker-compose.yml
+aws-creds
+logs
