@@ -198,6 +198,7 @@ def common_arg_parser():
     parser.add_argument('--continuous_mode', default=False, action='store_true')
     parser.add_argument('--iteration_length_s', default=300, type=int,)
     parser.add_argument('--core_iteration_cost', default=0.00166666666, type=float)
+    parser.add_argument('--initial_timestamp', default=-1, type=int)
     return parser
 
 def robotics_arg_parser():

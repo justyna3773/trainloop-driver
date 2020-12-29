@@ -68,9 +68,9 @@ class Job(Base):
     def as_cloudlet_descriptor_dict(self):
         return {
             'jobId': self.job_id,
-            'submissionDelay': self.submission_delay,
-            'mi': self.mi,
-            'numberOfCores': self.number_of_cores,
+            'submissionDelay': int(self.submission_delay),
+            'mi': int(self.mi),
+            'numberOfCores': int(self.number_of_cores),
         }
 
     def __repr__(self):
@@ -187,14 +187,18 @@ def _get_metric_data_after(metric, timestamp, max_entries=None):
 def _get_metric_values_after(metric, timestamp, max_entries=None):
     dbos = _get_metric_data_after(metric, timestamp, max_entries=max_entries)
 
-    return [dbo.value for dbo in dbos]
+    return [
+        None if dbo.value is None else float(dbo.value)
+        for dbo
+        in dbos
+    ]
 
 
 def _get_metric_value_at(metric, timestamp):
     data = _get_metric_data_after(metric, timestamp, max_entries=1)
 
     if len(data) > 0:
-        metric_value = data[0].value
+        metric_value = float(data[0].value)
     else:
         metric_value = None
 

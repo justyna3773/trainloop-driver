@@ -159,7 +159,7 @@ def get_workload(args, extra_args):
         return jobs
 
     if args.continuous_mode:
-        training_timestamp = extra_args['training_timestamp']
+        training_timestamp = int(extra_args['training_timestamp'])
         jobs = get_jobs_since(training_timestamp)
         time_adjusted = [
             adjust_submission_delay(job, training_timestamp)
@@ -187,14 +187,14 @@ def build_env(args, extra_args):
     config.gpu_options.allow_growth = True
     get_session(config=config)
 
-    initial_s_vm_count = extra_data.get('initial_s_vm_count', initial_vm_count)
-    initial_m_vm_count = extra_data.get('initial_m_vm_count', initial_vm_count)
-    initial_l_vm_count = extra_data.get('initial_l_vm_count', initial_vm_count)
+    initial_s_vm_count = extra_args.get('initial_s_vm_count', initial_vm_count)
+    initial_m_vm_count = extra_args.get('initial_m_vm_count', initial_vm_count)
+    initial_l_vm_count = extra_args.get('initial_l_vm_count', initial_vm_count)
 
     # how many iterations are in the hour? * core iteration running cost * 2
     # x2 because a S vm has 2 cores
     s_vm_hourly_running_cost = args.core_iteration_cost * 2
-    s_vm_hourly_running_cost *= (3600 / simulation_speedup)
+    s_vm_hourly_running_cost *= (3600 / simulator_speedup)
 
     env_kwargs = {
         'initial_s_vm_count': initial_s_vm_count,
@@ -352,13 +352,15 @@ def training_loop(args, extra_args):
     logger.log('Initializing databases')
     init_dbs()
     logger.log('Initialized databases')
-
     logger.log('Training loop: starting...')
 
     base_save_path = osp.expanduser(args.save_path)
     logger.log(f'Training loop: saving models in: {base_save_path}')
 
     iteration_length_s = args.iteration_length_s
+    # global training start
+    global_start = time.time()
+    initial_timestamp = global_start if args.initial_timestamp < 0 else args.initial_timestamp
     iterations = 0
     running = True
     model = None
@@ -370,23 +372,30 @@ def training_loop(args, extra_args):
     while running:
         logger.debug(f'Training loop: iteration {iterations}')
 
-        start = time.time()
-        training_timestamp = start - iteration_length_s
+        # start of the current iteration
+        iteration_start = time.time()
+        # how much time had passed since the start of the training
+        iteration_delta = global_start - iteration_start
+
+        current_tstamp_for_db = initial_timestamp + iteration_delta
+        training_timestamp = current_tstamp_for_db - iteration_length_s
         updated_extra_args = {
-            'iteration_start': start,
+            'iteration_start': iteration_start,
             'training_timestamp': training_timestamp,
         }
         updated_extra_args.update(extra_args)
 
         cores_count = get_cores_count_at(training_timestamp)
 
-        logger.log(f'Using training data starting at: {training_timestamp}')
+        logger.log(f'Using training data starting at: {training_timestamp} '
+                   f'Initial tstamp: {initial_timestamp}')
 
         if all([v is not None for k, v in cores_count.items()]):
+            logger.log(f'Initial cores: {cores_count}')
             updated_extra_args.update({
-                'initial_s_vm_count': math.floor(cores_count['s_cores'][0]/2),
-                'initial_m_vm_count': math.floor(cores_count['m_cores'][0]/2),
-                'initial_l_vm_count': math.floor(cores_count['l_cores'][0]/2),
+                'initial_s_vm_count': math.floor(cores_count['s_cores']/2),
+                'initial_m_vm_count': math.floor(cores_count['m_cores']/2),
+                'initial_l_vm_count': math.floor(cores_count['l_cores']/2),
             })
 
             model, env = train(args,
@@ -405,8 +414,8 @@ def training_loop(args, extra_args):
             logger.log(f'Cannot initialize vm counts - not enough data '
                        f'available. Cores count: {cores_count}')
 
-        end = time.time()
-        iteration_len = end - start
+        iteration_end = time.time()
+        iteration_len = iteration_end - iteration_start
         time_fill = iteration_length_s - iteration_len
         if time_fill > 0:
             logger.log(f'Sleeping for {time_fill}')

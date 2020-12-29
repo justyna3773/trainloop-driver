@@ -60,7 +60,9 @@ services:
               "--nsteps", "250",
               "--lr", "0.0003",
               "--network", "lstm",
-              "--iteration_length_s", "900",  # 15 minutes per iteration
+              "--iteration_length_s", "10", # "900",  # 15 minutes per iteration
+              "--initial_timestamp", "0",
+              "--nminibatches", "1", # to stop recurrent networks for breaking
               "--continuous_mode"]
     depends_on:
       - simulator
