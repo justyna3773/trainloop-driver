@@ -9,6 +9,6 @@ docker-push: docker
 	docker push pkoperek/trainloop-driver:latest
 
 test: docker
-	docker-compose down
-	docker-compose rm -f 
-	docker-compose up
+	docker-compose -f docker-compose-tests.yml down
+	docker-compose -f docker-compose-tests.yml rm -f 
+	docker-compose -f docker-compose-tests.yml up
