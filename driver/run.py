@@ -23,7 +23,7 @@ from driver.common.cmd_util import (
 from driver.common.tf_util import get_session
 from driver.common.swf_jobs import get_jobs_from_file
 from driver.common.db_jobs import (
-    get_cores_count_at,
+    get_cores_count_between,
     get_jobs_between,
     init_dbs,
 )
@@ -366,6 +366,14 @@ def update_oracle_policy(model):
     logger.log(f'Model updated ({resp.status_code}): {resp.text}')
 
 
+def data_available(val):
+    if val is not None:
+        if len(val) > 0:
+            return True
+
+    return False
+
+
 def training_loop(args, extra_args):
     logger.log('Initializing databases')
     init_dbs()
@@ -406,18 +414,19 @@ def training_loop(args, extra_args):
         }
         updated_extra_args.update(extra_args)
 
-        cores_count = get_cores_count_at(training_data_start)
+        cores_count = get_cores_count_between(training_data_start,
+                                              training_data_end)
 
         logger.log(f'Using training data starting at: '
                    f'{training_data_start}-{training_data_end} '
                    f'Initial tstamp: {initial_timestamp}')
 
-        if all([v is not None for k, v in cores_count.items()]):
+        if all([data_available(v) for k, v in cores_count.items()]):
             logger.log(f'Initial cores: {cores_count}')
             updated_extra_args.update({
-                'initial_s_vm_count': math.floor(cores_count['s_cores']/2),
-                'initial_m_vm_count': math.floor(cores_count['m_cores']/2),
-                'initial_l_vm_count': math.floor(cores_count['l_cores']/2),
+                'initial_s_vm_count': math.floor(cores_count['s_cores'][0]/2),
+                'initial_m_vm_count': math.floor(cores_count['m_cores'][0]/2),
+                'initial_l_vm_count': math.floor(cores_count['l_cores'][0]/2),
             })
 
             model, env = train(args,
@@ -433,7 +442,11 @@ def training_loop(args, extra_args):
                     args.core_iteration_cost,
                     cores_count)
 
+                logger.info(f'Old policy reward: {old_policy_total_reward} '
+                            f'new policy reward: {new_policy_total_reward}')
                 if new_policy_total_reward > old_policy_total_reward:
+                    logger.info('New policy has a higher reward, '
+                                'updating the policy')
                     update_oracle_policy(model)
         else:
             logger.log(f'Cannot initialize vm counts - not enough data '

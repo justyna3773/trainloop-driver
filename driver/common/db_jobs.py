@@ -174,9 +174,15 @@ def get_jobs_from_last_s(timespan):
     return get_jobs_between(now - timespan, now)
 
 
-def _get_metric_data_after(metric, timestamp, max_entries=None):
+
+
+def _get_metric_data_between(metric,
+                             beginning,
+                             end,
+                             max_entries=None):
     query_result = _session_monitoring.query(MetricValue).\
-        filter(MetricValue.inserted >= timestamp).\
+        filter(MetricValue.inserted >= beginning).\
+        filter(MetricValue.inserted <= end).\
         filter(MetricValue.metric == metric).\
         order_by(MetricValue.inserted.asc())
 
@@ -190,8 +196,11 @@ def _get_metric_data_after(metric, timestamp, max_entries=None):
     return dbos
 
 
-def _get_metric_values_after(metric, timestamp, max_entries=None):
-    dbos = _get_metric_data_after(metric, timestamp, max_entries=max_entries)
+def _get_metric_values_between(metric, beginning, end, max_entries=None):
+    dbos = _get_metric_data_between(metric,
+                                    beginning,
+                                    end,
+                                    max_entries=max_entries)
 
     return [
         None if dbo.value is None else float(dbo.value)
@@ -201,7 +210,8 @@ def _get_metric_values_after(metric, timestamp, max_entries=None):
 
 
 def _get_metric_value_at(metric, timestamp):
-    data = _get_metric_data_after(metric, timestamp, max_entries=1)
+    end = time.time()
+    data = _get_metric_data_between(metric, timestamp, end, max_entries=1)
 
     if len(data) > 0:
         metric_value = float(data[0].value)
@@ -211,10 +221,10 @@ def _get_metric_value_at(metric, timestamp):
     return metric_value
 
 
-def get_cores_count_after(timestamp):
-    s_cores = _get_metric_values_after('coresUsedCountS', timestamp)
-    m_cores = _get_metric_values_after('coresUsedCountM', timestamp)
-    l_cores = _get_metric_values_after('coresUsedCountL', timestamp)
+def get_cores_count_between(start, end):
+    s_cores = _get_metric_values_between('coresUsedCountS', start, end)
+    m_cores = _get_metric_values_between('coresUsedCountM', start, end)
+    l_cores = _get_metric_values_between('coresUsedCountL', start, end)
 
     return {
         's_cores': s_cores,
