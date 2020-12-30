@@ -150,9 +150,11 @@ def init_dbs():
     init_monitoring_db()
 
 
-def get_jobs_since(timestamp):
+def get_jobs_between(start, end):
     from_db = _session_jobs.query(Job).filter(
-        Job.submission_delay >= timestamp
+        Job.submission_delay >= start
+    ).filter(
+        Job.submission_delay <= end
     ).order_by(Job.submission_delay.desc())
 
     jobs = [
@@ -163,9 +165,13 @@ def get_jobs_since(timestamp):
     return jobs
 
 
+def get_jobs_since(timestamp):
+    return get_jobs_between(timestamp, time.time())
+
+
 def get_jobs_from_last_s(timespan):
     now = time.time()
-    return get_jobs_since(now - timespan)
+    return get_jobs_between(now - timespan, now)
 
 
 def _get_metric_data_after(metric, timestamp, max_entries=None):

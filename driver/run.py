@@ -24,7 +24,7 @@ from driver.common.tf_util import get_session
 from driver.common.swf_jobs import get_jobs_from_file
 from driver.common.db_jobs import (
     get_cores_count_at,
-    get_jobs_since,
+    get_jobs_between,
     init_dbs,
 )
 from driver import logger
@@ -111,27 +111,32 @@ def train(args,
 
     env = build_env(args, extra_args)
 
-    logger.info('Environment built...')
+    if env:
+        logger.info('New environment built...')
 
-    if args.network:
-        alg_kwargs['network'] = args.network
+        if args.network:
+            alg_kwargs['network'] = args.network
+        else:
+            if alg_kwargs.get('network') is None:
+                alg_kwargs['network'] = get_default_network(env_type)
+
+        logger.info('Training {} on {}:{} with arguments \n{}'.format(
+            args.alg,
+            env_type,
+            env_id,
+            alg_kwargs))
+
+        model = learn(
+            env=env,
+            seed=seed,
+            total_timesteps=total_timesteps,
+            old_model=old_model,
+            **alg_kwargs
+        )
     else:
-        if alg_kwargs.get('network') is None:
-            alg_kwargs['network'] = get_default_network(env_type)
-
-    logger.info('Training {} on {}:{} with arguments \n{}'.format(
-        args.alg,
-        env_type,
-        env_id,
-        alg_kwargs))
-
-    model = learn(
-        env=env,
-        seed=seed,
-        total_timesteps=total_timesteps,
-        old_model=old_model,
-        **alg_kwargs
-    )
+        logger.info('No new environment built - skipping training')
+        env = old_env
+        model = old_model
 
     return model, env
 
@@ -159,14 +164,24 @@ def get_workload(args, extra_args):
         return jobs
 
     if args.continuous_mode:
-        training_timestamp = int(extra_args['training_timestamp'])
-        jobs = get_jobs_since(training_timestamp)
-        time_adjusted = [
-            adjust_submission_delay(job, training_timestamp)
+        training_data_start = int(extra_args['training_data_start'])
+        training_data_end = int(extra_args['training_data_end'])
+        jobs = get_jobs_between(training_data_start, training_data_end)
+
+        # the timestamp of the job should be a real timestamp from the
+        # prod system - we need to move it to the beginning of the simulation
+        # otherwise we will wait for eternity (almost)
+        time_adjusted_jobs = [
+            adjust_submission_delay(job, training_data_start)
             for job
             in jobs
         ]
-        return time_adjusted
+
+        logger.info('DEBUG DEBUG DEBUG Jobs retrieved from database')
+        for job in jobs:
+            logger.info(f'Job: {job}')
+
+        return time_adjusted_jobs
 
     raise RuntimeError('Please use the test, workload_file or '
                        'continuous mode options')
@@ -179,6 +194,9 @@ def build_env(args, extra_args):
     simulator_speedup = args.simulator_speedup
 
     workload = get_workload(args, extra_args)
+    if len(workload) == 0:
+        logger.info('Cannot create a working environment without any jobs...')
+        return None
 
     env_type, env_id = get_env_type(args)
     config = tf.ConfigProto(allow_soft_placement=True,
@@ -375,19 +393,23 @@ def training_loop(args, extra_args):
         # start of the current iteration
         iteration_start = time.time()
         # how much time had passed since the start of the training
-        iteration_delta = global_start - iteration_start
+        iteration_delta = iteration_start - global_start
 
         current_tstamp_for_db = initial_timestamp + iteration_delta
-        training_timestamp = current_tstamp_for_db - iteration_length_s
+        training_data_end = current_tstamp_for_db
+        training_data_start = current_tstamp_for_db - iteration_length_s
+
         updated_extra_args = {
             'iteration_start': iteration_start,
-            'training_timestamp': training_timestamp,
+            'training_data_start': training_data_start,
+            'training_data_end': training_data_end,
         }
         updated_extra_args.update(extra_args)
 
-        cores_count = get_cores_count_at(training_timestamp)
+        cores_count = get_cores_count_at(training_data_start)
 
-        logger.log(f'Using training data starting at: {training_timestamp} '
+        logger.log(f'Using training data starting at: '
+                   f'{training_data_start}-{training_data_end} '
                    f'Initial tstamp: {initial_timestamp}')
 
         if all([v is not None for k, v in cores_count.items()]):
@@ -402,14 +424,17 @@ def training_loop(args, extra_args):
                                updated_extra_args,
                                old_env=env,
                                old_model=model)
-            model_save_path = f'{base_save_path}_{iterations}.bin'
-            model.save(model_save_path)
-            new_policy_total_reward = test_model(model, env)
-            old_policy_total_reward = calculate_reward(args.core_iteration_cost,
-                                                       cores_count)
 
-            if new_policy_total_reward > old_policy_total_reward:
-                update_oracle_policy(model)
+            if model:
+                model_save_path = f'{base_save_path}_{iterations}.bin'
+                model.save(model_save_path)
+                new_policy_total_reward = test_model(model, env)
+                old_policy_total_reward = calculate_reward(
+                    args.core_iteration_cost,
+                    cores_count)
+
+                if new_policy_total_reward > old_policy_total_reward:
+                    update_oracle_policy(model)
         else:
             logger.log(f'Cannot initialize vm counts - not enough data '
                        f'available. Cores count: {cores_count}')
