@@ -10,4 +10,4 @@ docker-push: docker
 
 test: docker
 	docker-compose rm -f 
-	docker-compose up
+	docker-compose up driver
