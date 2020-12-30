@@ -203,7 +203,7 @@ def build_env(args, extra_args):
                             intra_op_parallelism_threads=1,
                             inter_op_parallelism_threads=1)
     config.gpu_options.allow_growth = True
-    get_session(config=config)
+    get_session(config=config, force_recreate=True)
 
     initial_s_vm_count = extra_args.get('initial_s_vm_count', initial_vm_count)
     initial_m_vm_count = extra_args.get('initial_m_vm_count', initial_vm_count)

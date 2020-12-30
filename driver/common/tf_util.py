@@ -48,9 +48,15 @@ def huber_loss(x, delta=1.0):
 # Global session
 # ================================================================
 
-def get_session(config=None):
+def get_session(config=None, force_recreate=False):
     """Get default session or create one with a given config"""
     sess = tf.get_default_session()
+
+    if force_recreate and sess:
+        tf.reset_default_graph()
+        sess.close()
+        sess = None
+
     if sess is None:
         sess = make_session(config=config, make_default=True)
     return sess
