@@ -151,11 +151,15 @@ def init_dbs():
 
 
 def get_jobs_between(start, end):
+
+    logger.info(f'Fetching jobs between: {start} {end}')
     from_db = _session_jobs.query(Job).filter(
         Job.submission_delay >= start
     ).filter(
         Job.submission_delay <= end
     ).order_by(Job.submission_delay.desc())
+
+#    logger.info(f'SQL Query: {str(from_db)}')
 
     jobs = [
         job.as_cloudlet_descriptor_dict()
@@ -172,8 +176,6 @@ def get_jobs_since(timestamp):
 def get_jobs_from_last_s(timespan):
     now = time.time()
     return get_jobs_between(now - timespan, now)
-
-
 
 
 def _get_metric_data_between(metric,

@@ -168,6 +168,10 @@ def get_workload(args, extra_args):
         training_data_end = int(extra_args['training_data_end'])
         jobs = get_jobs_between(training_data_start, training_data_end)
 
+#        logger.info('DEBUG DEBUG DEBUG Jobs retrieved from database')
+#        for job in jobs:
+#            logger.info(f'Job: {job}')
+
         # the timestamp of the job should be a real timestamp from the
         # prod system - we need to move it to the beginning of the simulation
         # otherwise we will wait for eternity (almost)
@@ -176,10 +180,6 @@ def get_workload(args, extra_args):
             for job
             in jobs
         ]
-
-        logger.info('DEBUG DEBUG DEBUG Jobs retrieved from database')
-        for job in jobs:
-            logger.info(f'Job: {job}')
 
         return time_adjusted_jobs
 
@@ -341,9 +341,8 @@ def test_model(model, env):
 
 def calculate_reward(core_iteration_cost, cores_counts):
     total_reward = 0
-    for metric_values in cores_counts:
-        values = [point.value for point in metric_values]
-        for value in values:
+    for _, metric_values in cores_counts.items():
+        for value in metric_values:
             total_reward -= value * core_iteration_cost
     return total_reward
 
@@ -394,18 +393,30 @@ def training_loop(args, extra_args):
 
     date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
     base_save_path = os.path.join(base_save_path, date_tag)
+    prev_tstamp_for_db = None
 
     while running:
         logger.debug(f'Training loop: iteration {iterations}')
 
         # start of the current iteration
         iteration_start = time.time()
+
         # how much time had passed since the start of the training
         iteration_delta = iteration_start - global_start
 
         current_tstamp_for_db = initial_timestamp + iteration_delta
+
         training_data_end = current_tstamp_for_db
-        training_data_start = current_tstamp_for_db - iteration_length_s
+
+        if prev_tstamp_for_db:
+            training_data_start = prev_tstamp_for_db
+        else:
+            training_data_start = current_tstamp_for_db - iteration_length_s
+
+        # this needs to happen after training_data_start, when we determine
+        # the start of the data we need to have the value from the previous
+        # iteration
+        prev_tstamp_for_db = current_tstamp_for_db
 
         updated_extra_args = {
             'iteration_start': iteration_start,
@@ -429,15 +440,18 @@ def training_loop(args, extra_args):
                 'initial_l_vm_count': math.floor(cores_count['l_cores'][0]/2),
             })
 
-            model, env = train(args,
-                               updated_extra_args,
-                               old_env=env,
-                               old_model=model)
+            model, new_env = train(args,
+                                   updated_extra_args,
+                                   old_env=env,
+                                   old_model=model)
 
-            if model:
+            # train should create a new env if there is data to train on
+            # if the old env == new env it means there was no training
+            # thus there is no need to evaluate
+            if new_env != env and model is not None:
                 model_save_path = f'{base_save_path}_{iterations}.bin'
                 model.save(model_save_path)
-                new_policy_total_reward = test_model(model, env)
+                new_policy_total_reward = test_model(model, new_env)
                 old_policy_total_reward = calculate_reward(
                     args.core_iteration_cost,
                     cores_count)
@@ -448,6 +462,10 @@ def training_loop(args, extra_args):
                     logger.info('New policy has a higher reward, '
                                 'updating the policy')
                     update_oracle_policy(model)
+            else:
+                logger.info('The environment has not changed, evaluation '
+                            'skipped')
+            env = new_env
         else:
             logger.log(f'Cannot initialize vm counts - not enough data '
                        f'available. Cores count: {cores_count}')
@@ -458,6 +476,10 @@ def training_loop(args, extra_args):
         if time_fill > 0:
             logger.log(f'Sleeping for {time_fill}')
             time.sleep(time_fill)
+        else:
+            logger.log(f'Does not make sense to wait... '
+                       f'We used {-time_fill}s more than expected')
+
         iterations += 1
 
     env.close()
@@ -484,7 +506,7 @@ def main():
     args = sys.argv
     arg_parser = common_arg_parser()
     args, unknown_args = arg_parser.parse_known_args(args)
-    configure_logger(args.log_path, format_strs=['stdout', 'log'])
+    configure_logger(args.log_path, format_strs=['stdout', 'log', 'csv'])
     extra_args = parse_cmdline_kwargs(unknown_args)
 
     if args.continuous_mode:
