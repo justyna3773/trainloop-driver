@@ -56,7 +56,7 @@ services:
               "--lam", "0.97",
               "--gamma", "0.99",
               "--cliprange", "0.2",
-              "--num_timesteps", "500000",    # this needs to be adjusted to the amount of data fetched from the db; 500k should be enough to train from fresh, but not too long in wall clock time
+              "--num_timesteps", "50000",    # this needs to be adjusted to the amount of data fetched from the db; 500k should be enough to train from fresh, but not too long in wall clock time
               "--nsteps", "250",
               "--lr", "0.0003",
               "--network", "lstm",
