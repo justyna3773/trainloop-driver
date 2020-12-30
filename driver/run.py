@@ -96,49 +96,35 @@ for env in gym.envs.registry.all():
 
 def train(args,
           extra_args,
-          old_env=None,
-          old_model=None,
+          env,
           ):
-
     env_type, env_id = get_env_type(args)
-
-    total_timesteps = int(args.num_timesteps)
-    seed = args.seed
-
-    learn = get_learn_function(args.alg)
     alg_kwargs = get_learn_function_defaults(args.alg, env_type)
     alg_kwargs.update(extra_args)
 
-    env = build_env(args, extra_args)
-
-    if env:
-        logger.info('New environment built...')
-
-        if args.network:
-            alg_kwargs['network'] = args.network
-        else:
-            if alg_kwargs.get('network') is None:
-                alg_kwargs['network'] = get_default_network(env_type)
-
-        logger.info('Training {} on {}:{} with arguments \n{}'.format(
-            args.alg,
-            env_type,
-            env_id,
-            alg_kwargs))
-
-        model = learn(
-            env=env,
-            seed=seed,
-            total_timesteps=total_timesteps,
-            old_model=old_model,
-            **alg_kwargs
-        )
+    if args.network:
+        alg_kwargs['network'] = args.network
     else:
-        logger.info('No new environment built - skipping training')
-        env = old_env
-        model = old_model
+        if alg_kwargs.get('network') is None:
+            alg_kwargs['network'] = get_default_network(env_type)
 
-    return model, env
+    logger.info('Training {} on {}:{} with arguments \n{}'.format(
+        args.alg,
+        env_type,
+        env_id,
+        alg_kwargs))
+
+    total_timesteps = int(args.num_timesteps)
+    seed = args.seed
+    learn = get_learn_function(args.alg)
+    model = learn(
+        env=env,
+        seed=seed,
+        total_timesteps=total_timesteps,
+        **alg_kwargs
+    )
+
+    return model
 
 
 def adjust_submission_delay(job, start_timestamp):
@@ -347,11 +333,8 @@ def calculate_reward(core_iteration_cost, cores_counts):
     return total_reward
 
 
-def update_oracle_policy(model):
-    path = 'updated_model.bin'
-    model.save(path)
-
-    with open(path, 'rb') as updated_model:
+def update_oracle_policy(model_save_path):
+    with open(model_save_path, 'rb') as updated_model:
         updated_model_bytes = updated_model.read()
         updated_model_encoded = base64.b64encode(updated_model_bytes)
 
@@ -394,6 +377,7 @@ def training_loop(args, extra_args):
     date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
     base_save_path = os.path.join(base_save_path, date_tag)
     prev_tstamp_for_db = None
+    previous_model_save_path = None
 
     while running:
         logger.debug(f'Training loop: iteration {iterations}')
@@ -434,24 +418,35 @@ def training_loop(args, extra_args):
 
         if all([data_available(v) for k, v in cores_count.items()]):
             logger.log(f'Initial cores: {cores_count}')
+
+            if previous_model_save_path:
+                load_path = previous_model_save_path
+            else:
+                logger.info(f'No model from previous iteration, using the '
+                            f'initial one: {args.initial_model}')
+                load_path = args.initial_model
+
             updated_extra_args.update({
                 'initial_s_vm_count': math.floor(cores_count['s_cores'][0]/2),
                 'initial_m_vm_count': math.floor(cores_count['m_cores'][0]/2),
                 'initial_l_vm_count': math.floor(cores_count['l_cores'][0]/2),
+                'load_path': load_path,
             })
 
-            model, new_env = train(args,
-                                   updated_extra_args,
-                                   old_env=env,
-                                   old_model=model)
+            env = build_env(args, updated_extra_args)
 
-            # train should create a new env if there is data to train on
-            # if the old env == new env it means there was no training
-            # thus there is no need to evaluate
-            if new_env != env and model is not None:
+            # if there is no new env it means there was no training data
+            # thus there is no need to train and evaluate
+            if env is not None:
+                logger.info('New environment built...')
+                model = train(args,
+                              updated_extra_args,
+                              env)
+
                 model_save_path = f'{base_save_path}_{iterations}.bin'
                 model.save(model_save_path)
-                new_policy_total_reward = test_model(model, new_env)
+                previous_model_save_path = model_save_path
+                new_policy_total_reward = test_model(model, env)
                 old_policy_total_reward = calculate_reward(
                     args.core_iteration_cost,
                     cores_count)
@@ -461,11 +456,10 @@ def training_loop(args, extra_args):
                 if new_policy_total_reward > old_policy_total_reward:
                     logger.info('New policy has a higher reward, '
                                 'updating the policy')
-                    update_oracle_policy(model)
+                    update_oracle_policy(model_save_path)
             else:
-                logger.info('The environment has not changed, evaluation '
-                            'skipped')
-            env = new_env
+                logger.info('The environment has not changed, training and '
+                            'evaluation skipped')
         else:
             logger.log(f'Cannot initialize vm counts - not enough data '
                        f'available. Cores count: {cores_count}')
@@ -488,7 +482,8 @@ def training_loop(args, extra_args):
 
 def training_once(args, extra_args):
     logger.log('Training once: starting...')
-    model, env = train(args, extra_args)
+    env = build_env(args, extra_args)
+    model = train(args, extra_args, env)
 
     if args.save_path is not None:
         save_path = osp.expanduser(args.save_path)
