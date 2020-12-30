@@ -1549,3 +1549,6 @@ INSERT INTO public.jobs VALUES (1548, 11400, 1584000, 1, 360, 4400, 360);
 INSERT INTO public.jobs VALUES (1549, 11400, 1584000, 1, 360, 4400, 360);
 INSERT INTO public.jobs VALUES (1550, 11400, 1584000, 1, 360, 4400, 360);
 INSERT INTO public.jobs VALUES (1551, 13680, 4400, 1, 1, 4400, 1);
+
+-- move the workload 29 minutes earlier to speed up testing
+UPDATE public.jobs SET submission_delay = submission_delay - 1740;
