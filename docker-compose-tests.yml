@@ -37,8 +37,20 @@ services:
       - ./db_init/synthetic_workload.sql:/docker-entrypoint-initdb.d/synthetic_workload.sql
     ports:
       - "5433:5432"
-        
-  driver:
+
+  oracle:
+    image: pkoperek/baselinesme:2020-07-04
+    environment:
+      - POLICY_STORAGE_DIRECTORY=/srv/new_policies
+      - INITIAL_POLICY=/srv/initial_policy/small_policy.bin
+      - INITIAL_NETWORK_TYPE=lstm
+    volumes:
+      - ./prod_policy:/srv/initial_policy
+      - ./oracle_policies:/srv/new_policies
+    ports:
+      - 8082:8080
+
+  policytrainer:
     image: pkoperek/trainloop-driver:1.0
     environment:
       - CLOUDSIM_GATEWAY_HOST=simulator
@@ -62,6 +74,7 @@ services:
               "--network", "lstm",
               "--iteration_length_s", "10",
               "--initial_timestamp", "0",
+              "--initial_model", "/initial_policy/small_policy.bin",
               "--nminibatches", "1", # to stop recurrent networks for breaking
               "--continuous_mode"]
     depends_on:
@@ -72,3 +85,4 @@ services:
       - "./output_models:/output_models"
       - "./input_workloads:/input_workloads"
       - "./logs:/logs"
+      - "./prod_policy:/initial_policy"
