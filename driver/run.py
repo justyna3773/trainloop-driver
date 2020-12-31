@@ -22,7 +22,7 @@ from driver.common.cmd_util import (
 )
 from driver.common.tf_util import get_session
 from driver.common.swf_jobs import get_jobs_from_file
-from driver.common.db_jobs import (
+from driver.common.db import (
     get_cores_count_at,
     get_jobs_between,
     init_dbs,
