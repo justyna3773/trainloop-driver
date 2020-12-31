@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from driver import logger
 
 import os
+import time
 
 
 MONITORING_DB_USERNAME = os.getenv('MONITORING_DB_USERNAME', 'samm')
