@@ -337,7 +337,6 @@ def update_oracle_policy(model_save_path):
         "network_type": "lstm",
     }
 
-    logger.log(f'Request payload: {req_payload}')
     resp = requests.post(oracle_update_url, json=req_payload)
     logger.log(f'Model updated ({resp.status_code}): {resp.text}')
 
