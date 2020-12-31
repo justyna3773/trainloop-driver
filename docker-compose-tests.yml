@@ -81,6 +81,7 @@ services:
       - simulator
       - sammdb
       - dnnevodb
+      - oracle
     volumes:
       - "./output_models:/output_models"
       - "./input_workloads:/input_workloads"
