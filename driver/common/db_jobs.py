@@ -246,6 +246,7 @@ def get_cores_count_at(timestamp):
         'l_cores': l_cores,
     }
 
+
 if __name__ == '__main__':
     init_dbs()
 

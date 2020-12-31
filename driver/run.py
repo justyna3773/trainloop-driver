@@ -23,7 +23,7 @@ from driver.common.cmd_util import (
 from driver.common.tf_util import get_session
 from driver.common.swf_jobs import get_jobs_from_file
 from driver.common.db_jobs import (
-    get_cores_count_between,
+    get_cores_count_at,
     get_jobs_between,
     init_dbs,
 )
@@ -325,14 +325,6 @@ def test_model(model, env):
     return episode_rew
 
 
-def calculate_reward(core_iteration_cost, cores_counts):
-    total_reward = 0
-    for _, metric_values in cores_counts.items():
-        for value in metric_values:
-            total_reward -= value * core_iteration_cost
-    return total_reward
-
-
 def update_oracle_policy(model_save_path):
     with open(model_save_path, 'rb') as updated_model:
         updated_model_bytes = updated_model.read()
@@ -350,8 +342,7 @@ def update_oracle_policy(model_save_path):
 
 def data_available(val):
     if val is not None:
-        if len(val) > 0:
-            return True
+        return True
 
     return False
 
@@ -371,13 +362,13 @@ def training_loop(args, extra_args):
     initial_timestamp = global_start if args.initial_timestamp < 0 else args.initial_timestamp
     iterations = 0
     running = True
-    model = None
     env = None
 
     date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
     base_save_path = os.path.join(base_save_path, date_tag)
     prev_tstamp_for_db = None
     previous_model_save_path = None
+    current_oracle_model = args.initial_model
 
     while running:
         logger.debug(f'Training loop: iteration {iterations}')
@@ -409,8 +400,7 @@ def training_loop(args, extra_args):
         }
         updated_extra_args.update(extra_args)
 
-        cores_count = get_cores_count_between(training_data_start,
-                                              training_data_end)
+        cores_count = get_cores_count_at(training_data_start)
 
         logger.log(f'Using training data starting at: '
                    f'{training_data_start}-{training_data_end} '
@@ -427,9 +417,9 @@ def training_loop(args, extra_args):
                 load_path = args.initial_model
 
             updated_extra_args.update({
-                'initial_s_vm_count': math.floor(cores_count['s_cores'][0]/2),
-                'initial_m_vm_count': math.floor(cores_count['m_cores'][0]/2),
-                'initial_l_vm_count': math.floor(cores_count['l_cores'][0]/2),
+                'initial_s_vm_count': math.floor(cores_count['s_cores']/2),
+                'initial_m_vm_count': math.floor(cores_count['m_cores']/2),
+                'initial_l_vm_count': math.floor(cores_count['l_cores']/2),
                 'load_path': load_path,
             })
 
@@ -447,16 +437,26 @@ def training_loop(args, extra_args):
                 model.save(model_save_path)
                 previous_model_save_path = model_save_path
                 new_policy_total_reward = test_model(model, env)
-                old_policy_total_reward = calculate_reward(
-                    args.core_iteration_cost,
-                    cores_count)
+
+                if current_oracle_model:
+                    model.load(current_oracle_model)
+                    old_policy_total_reward = test_model(model, env)
+                else:
+                    old_policy_total_reward = None
 
                 logger.info(f'Old policy reward: {old_policy_total_reward} '
                             f'new policy reward: {new_policy_total_reward}')
-                if new_policy_total_reward > old_policy_total_reward:
-                    logger.info('New policy has a higher reward, '
-                                'updating the policy')
+                if old_policy_total_reward:
+                    if new_policy_total_reward > old_policy_total_reward:
+                        logger.info('New policy has a higher reward, '
+                                    'updating the policy')
+                        update_oracle_policy(model_save_path)
+                        current_oracle_model = model_save_path
+                else:
+                    logger.info('The old policy do not exist - we choose to '
+                                'do an update')
                     update_oracle_policy(model_save_path)
+                    current_oracle_model = model_save_path
             else:
                 logger.info('The environment has not changed, training and '
                             'evaluation skipped')
