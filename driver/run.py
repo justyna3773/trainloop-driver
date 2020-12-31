@@ -329,14 +329,16 @@ def update_oracle_policy(model_save_path):
     with open(model_save_path, 'rb') as updated_model:
         updated_model_bytes = updated_model.read()
         updated_model_encoded = base64.b64encode(updated_model_bytes)
+        updated_model_str = updated_model_encoded.decode('utf-8')
 
     req_payload = {
-        "content": updated_model_encoded,
-        "file_suffix": datetime.date.today().isoformat(),
+        "content": updated_model_str,
+        "file_suffix": datetime.datetime.now().isoformat(),
         "network_type": "lstm",
     }
 
-    resp = requests.post(oracle_update_url, data=req_payload)
+    logger.log(f'Request payload: {req_payload}')
+    resp = requests.post(oracle_update_url, json=req_payload)
     logger.log(f'Model updated ({resp.status_code}): {resp.text}')
 
 
