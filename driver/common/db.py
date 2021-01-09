@@ -65,12 +65,22 @@ class Job(Base):
     cpu_time_spent_s = Column('cpu_time_spent_s', Numeric)
     mips_per_core = Column('mips_per_core', Numeric)
     wallclock_time_spent_s = Column('wallclock_time_spent_s', Numeric)
+    job_started = Column(Numeric)
+    job_ended = Column(Numeric)
 
-    def as_cloudlet_descriptor_dict(self):
+    def as_cloudlet_descriptor_dict(self, time_limit):
+        if not self.mi:
+            # this is not a precise calculation of how many MI were used
+            # to calculate a given task, however this is a reasonable approximation
+            time_until_limit = time_limit - self.job_started
+            mi = self.mips_per_core * self.number_of_cores * time_until_limit
+        else:
+            mi = self.mi
+
         return {
             'jobId': self.job_id,
             'submissionDelay': int(self.submission_delay),
-            'mi': int(self.mi),
+            'mi': int(mi),
             'numberOfCores': int(self.number_of_cores),
         }
 
@@ -83,7 +93,9 @@ class Job(Base):
             f'number_of_cores={self.number_of_cores},'
             f'cpu_time_spent_s={self.cpu_time_spent_s},'
             f'mips_per_core={self.mips_per_core},'
-            f'wallclock_time_spent_s={self.wallclock_time_spent_s}>'
+            f'wallclock_time_spent_s={self.wallclock_time_spent_s}>',
+            f'job_started={self.job_started}>',
+            f'job_ended={self.job_ended}>',
         )
 
 
@@ -163,7 +175,7 @@ def get_jobs_between(start, end):
 #    logger.info(f'SQL Query: {str(from_db)}')
 
     jobs = [
-        job.as_cloudlet_descriptor_dict()
+        job.as_cloudlet_descriptor_dict(time_limit=end)
         for job in from_db
     ]
 
@@ -183,9 +195,12 @@ def _get_metric_data_between(metric,
                              beginning,
                              end,
                              max_entries=None):
+
+    beginning_nsec = int(beginning * 1000)
+    end_nsec = int(end * 1000)
     query_result = _session_monitoring.query(MetricValue).\
-        filter(MetricValue.inserted >= beginning).\
-        filter(MetricValue.inserted <= end).\
+        filter(MetricValue.inserted >= beginning_nsec).\
+        filter(MetricValue.inserted <= end_nsec).\
         filter(MetricValue.metric == metric).\
         order_by(MetricValue.inserted.asc())
 

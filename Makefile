@@ -1,4 +1,4 @@
-VERSION_TAG="1.0"
+VERSION_TAG="1.2"
 
 docker:
 	docker build -f Dockerfile -t pkoperek/trainloop-driver:${VERSION_TAG} .

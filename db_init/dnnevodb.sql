@@ -8,6 +8,8 @@ CREATE TABLE public.jobs (
 	cpu_time_spent_s numeric NULL,
 	mips_per_core numeric NULL,
 	wallclock_time_spent_s numeric NULL,
+  job_started numeric NULL,
+  job_ended numeric NULL,
 	CONSTRAINT jobs_pkey PRIMARY KEY (id)
 );
 

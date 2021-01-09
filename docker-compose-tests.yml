@@ -39,7 +39,7 @@ services:
       - "5433:5432"
 
   oracle:
-    image: pkoperek/baselinesme:2020-12-31
+    image: pkoperek/baselinesme:2021-01-02
     environment:
       - POLICY_STORAGE_DIRECTORY=/srv/new_policies
       - INITIAL_POLICY=/srv/initial_policy/small_policy.bin
