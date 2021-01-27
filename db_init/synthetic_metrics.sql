@@ -682,3 +682,5 @@ INSERT INTO public.metrics_table VALUES (681, 'GRAPHITE', 'samm-workers', 'cores
 INSERT INTO public.metrics_table VALUES (682, 'GRAPHITE', 'samm-workers', 'coresUsedCountL', '1.0', 13560);
 INSERT INTO public.metrics_table VALUES (683, 'GRAPHITE', 'samm-workers', 'coresUsedCountL', '1.0', 13620);
 INSERT INTO public.metrics_table VALUES (684, 'GRAPHITE', 'samm-workers', 'coresUsedCountL', '1.0', 13680);
+
+UPDATE public.metrics_table SET inserted = inserted * 1000;

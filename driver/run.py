@@ -158,6 +158,17 @@ def get_workload(args, extra_args):
 #        for job in jobs:
 #            logger.info(f'Job: {job}')
 
+        # we want to always have at least one job at the end of the simulation
+        if len(jobs) == 0:
+            jobs.append({
+                # id is the nanosecond of the last possible job submission + 1
+                # which should give us enough room to avoid conflicts in ids
+                'jobId': int(training_data_end * 1000 + 1),
+                'submissionDelay': training_data_end,
+                'mi': 1,
+                'numberOfCores': 1,
+            })
+
         # the timestamp of the job should be a real timestamp from the
         # prod system - we need to move it to the beginning of the simulation
         # otherwise we will wait for eternity (almost)
@@ -181,8 +192,13 @@ def build_env(args, extra_args):
 
     workload = get_workload(args, extra_args)
     if len(workload) == 0:
-        logger.info('Cannot create a working environment without any jobs...')
+        logger.error('This should never happen! '
+                     'Cannot create a working environment without any jobs...')
         return None
+
+    logger.info('Dumping jobs available for training')
+    for job in workload:
+        logger.info(f'{job}')
 
     env_type, env_id = get_env_type(args)
     config = tf.ConfigProto(allow_soft_placement=True,
@@ -352,7 +368,7 @@ def training_loop(args, extra_args):
     logger.log('Initializing databases')
     init_dbs()
     logger.log('Initialized databases')
-    logger.log('Training loop: starting...')
+    logger.log('Training loop: initializing...')
 
     base_save_path = osp.expanduser(args.save_path)
     logger.log(f'Training loop: saving models in: {base_save_path}')
@@ -370,6 +386,11 @@ def training_loop(args, extra_args):
     prev_tstamp_for_db = None
     previous_model_save_path = None
     current_oracle_model = args.initial_model
+
+    logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
+               f'data is gathered for simulation')
+    time.sleep(iteration_length_s)
+    logger.log('Training loop: entering...')
 
     while running:
         logger.debug(f'Training loop: iteration {iterations}')

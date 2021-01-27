@@ -198,6 +198,9 @@ def _get_metric_data_between(metric,
 
     beginning_nsec = int(beginning * 1000)
     end_nsec = int(end * 1000)
+
+    print(f'_get_metric_values_between {beginning_nsec} {end_nsec}')
+
     query_result = _session_monitoring.query(MetricValue).\
         filter(MetricValue.inserted >= beginning_nsec).\
         filter(MetricValue.inserted <= end_nsec).\
