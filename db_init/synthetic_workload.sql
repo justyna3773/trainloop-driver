@@ -1552,3 +1552,6 @@ INSERT INTO public.jobs VALUES (1551, 13680, 4400, 1, 1, 4400, 1);
 
 -- move the workload 29 minutes earlier to speed up testing
 UPDATE public.jobs SET submission_delay = submission_delay - 1740;
+
+-- for testing of handling the negative mi
+-- UPDATE public.jobs SET mi = -mi;

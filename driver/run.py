@@ -335,8 +335,8 @@ def test_model(model, env):
 
         obs, rew, done, _ = env.step(actions)
         episode_rew += rew
-        obs_arr = env.render(mode='array')
-        obs_last = [serie[-1] for serie in obs_arr]
+        #obs_arr = env.render(mode='array')
+        #obs_last = [serie[-1] for serie in obs_arr]
         #print(f'{obs_last} | rew: {rew} | ep_rew: {episode_rew}')
 
     return episode_rew
@@ -428,6 +428,20 @@ def training_loop(args, extra_args):
         logger.log(f'Using training data starting at: '
                    f'{training_data_start}-{training_data_end} '
                    f'Initial tstamp: {initial_timestamp}')
+
+        if any([not data_available(v) for k, v in cores_count.items()]):
+            initial_vm_cnt = args.initial_vm_count_no_data
+            if initial_vm_cnt:
+                logger.log(f'Cannot retrieve vm counts from db: {cores_count}. '
+                           f'Overwriting with initial_vm_count_no_data: '
+                           f'{initial_vm_cnt}'
+                           )
+
+                cores_count = {
+                    's_cores': initial_vm_cnt,
+                    'm_cores': initial_vm_cnt,
+                    'l_cores': initial_vm_cnt,
+                }
 
         if all([data_available(v) for k, v in cores_count.items()]):
             logger.log(f'Initial cores: {cores_count}')
