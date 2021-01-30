@@ -154,9 +154,10 @@ def get_workload(args, extra_args):
         training_data_end = int(extra_args['training_data_end'])
         jobs = get_jobs_between(training_data_start, training_data_end)
 
-#        logger.info('DEBUG DEBUG DEBUG Jobs retrieved from database')
-#        for job in jobs:
-#            logger.info(f'Job: {job}')
+        for job in jobs:
+            if job['mi'] < 1:
+                logger.info(f'Job: {job} has mi < 1. Changing to 1')
+                job['mi'] = 1
 
         # we want to always have at least one job at the end of the simulation
         if len(jobs) == 0:
