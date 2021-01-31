@@ -31,8 +31,9 @@ from driver import logger
 from importlib import import_module
 
 
-oracle_update_url = os.getenv("ORACLE_UPDATE_URL",
-                              "http://oracle:8080/update")
+submitted_jobs_cnt: int = 0
+oracle_update_url: str = os.getenv("ORACLE_UPDATE_URL",
+                                   "http://oracle:8080/update")
 
 
 test_workload = [
@@ -132,7 +133,16 @@ def adjust_submission_delay(job, start_timestamp):
     return job
 
 
+def ensure_mi_is_positive(jobs):
+    for job in jobs:
+        if job['mi'] < 1:
+            logger.info(f'Job: {job} has mi < 1. Changing to 1')
+            job['mi'] = 1
+
+
 def get_workload(args, extra_args):
+    global submitted_jobs_cnt
+
     if args.test:
         logger.info('*** TEST MODE ***')
         logger.info('Using test workload ...')
@@ -154,17 +164,30 @@ def get_workload(args, extra_args):
         training_data_end = int(extra_args['training_data_end'])
         jobs = get_jobs_between(training_data_start, training_data_end)
 
-        for job in jobs:
-            if job['mi'] < 1:
-                logger.info(f'Job: {job} has mi < 1. Changing to 1')
-                job['mi'] = 1
+        ensure_mi_is_positive(jobs)
+
+        if args.reindex_jobs:
+            logger.info('Reindexing the jobs enabled - changing the ids.')
+            for job in jobs:
+                submitted_jobs_cnt += 1
+                job['jobId'] = submitted_jobs_cnt
+
+            submitted_jobs_cnt += 1
+            extra_job_id = submitted_jobs_cnt
+
+        else:
+            max_id = 0
+            for job in jobs:
+                if job['jobId'] > max_id:
+                    max_id = job['jobId']
+            extra_job_id = max_id + 1
 
         # we want to always have at least one job at the end of the simulation
         if len(jobs) == 0:
             jobs.append({
                 # id is the nanosecond of the last possible job submission + 1
                 # which should give us enough room to avoid conflicts in ids
-                'jobId': int(training_data_end * 1000 + 1),
+                'jobId': extra_job_id,
                 'submissionDelay': training_data_end,
                 'mi': 1,
                 'numberOfCores': 1,
@@ -262,7 +285,8 @@ def get_env_type(args):
                 break
         if ':' in env_id:
             env_type = re.sub(r':.*', '', env_id)
-        assert env_type is not None, 'env_id {} is not recognized in env types'.format(env_id, _game_envs.keys())
+        assert env_type is not None, 'env_id {} is not recognized in env types'.format(
+            env_id, _game_envs.keys())
 
     return env_type, env_id
 
