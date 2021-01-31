@@ -201,6 +201,8 @@ def common_arg_parser():
     parser.add_argument('--initial_timestamp', default=-1, type=int)
     parser.add_argument('--initial_model', default=None, type=str)
     parser.add_argument('--initial_vm_count_no_data', default=None, type=int)
+    parser.add_argument('--reindex_jobs', default=True, type=bool)
+    
     return parser
 
 def robotics_arg_parser():
