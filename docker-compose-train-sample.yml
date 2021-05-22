@@ -1,0 +1,52 @@
+version: '3'
+services:
+  simulator:
+    restart: "no"
+    environment:
+      - HOST_PE_MIPS=4400
+      - MAX_VMS_PER_SIZE=10
+      - PRINT_JOBS_PERIODICALLY=false
+    image: pkoperek/cloudsimplus-gateway:1.8.0
+
+  driver:
+    image: pkoperek/trainloop-driver:1.0
+    environment:
+      - CLOUDSIM_GATEWAY_HOST=simulator
+      - CLOUDSIM_GATEWAY_PORT=25333
+    # remember to download and setup a training workload before starting
+    # the training process!
+    command: [
+            "trainloop",
+            "--simulator_speedup", "60",
+            "--save_path", "/output_model/20201026_1_model.bin",
+            "--mips_per_core", "4400",
+            "--workload_file", "/input_workloads/TEST-DNNEVO-2.swf",
+            "--env", "ThreeSizeAppEnv-v0",
+            "--log_path", "/logs/20201026.1",
+            "--vf_coef", "1",
+            "--lam", "0.99",
+            "--gamma", "0.95",
+            "--ent_coef", "0.001",
+            "--cliprange", "0.05",
+            "--num_timesteps", "2000000",
+            "--nsteps", "100",
+            "--lr", "0.00003",
+            "--seed", "5",
+            "--initial_vm_count", "1",
+            "--network", "lstm_mlp",
+            "--nlstm", "128",
+            "--layer_norm", "True",
+            "--nminibatches", "1",
+            "--save_interval", "10000",
+            "--queue_wait_penalty", "0.0005",
+            "--max_grad_norm", "1",
+            "--noptepochs", "10",
+            "--vfcliprange", "10.0"
+            ]
+    depends_on:
+      - simulator
+    volumes:
+      - "./training_logs:/logs"
+      - "./output_model:/output_model"
+      - "./input_workloads:/input_workloads"
+
