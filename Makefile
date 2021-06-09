@@ -1,4 +1,4 @@
-VERSION_TAG="1.3.5"
+VERSION_TAG="1.3.6"
 
 docker:
 	docker build -f Dockerfile -t amalota/trainloop-driver:${VERSION_TAG} .
