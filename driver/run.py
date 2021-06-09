@@ -5,7 +5,6 @@ import math
 import os.path as osp
 import gym
 import gym_cloudsimplus
-import tensorflow as tf
 import numpy as np
 import json
 import requests
@@ -94,36 +93,82 @@ for env in gym.envs.registry.all():
     env_type = env.entry_point.split(':')[0].split('.')[-1]
     _game_envs[env_type].add(env.id)
 
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.results_plotter import load_results, ts2xy
+from tqdm.auto import tqdm
+
+
+class ProgressBarCallback(BaseCallback):
+    """
+    :param pbar: (tqdm.pbar) Progress bar object
+    """
+
+    def __init__(self, pbar):
+        super(ProgressBarCallback, self).__init__()
+        self._pbar = pbar
+
+    def _on_step(self):
+        # Update the progress bar:
+        self._pbar.n = self.num_timesteps
+        self._pbar.update(0)
+
+
+# this callback uses the 'with' block, allowing for correct initialisation and destruction
+class ProgressBarManager(object):
+    def __init__(self, total_timesteps):  # init object with total timesteps
+        self.pbar = None
+        self.total_timesteps = total_timesteps
+
+    def __enter__(self):  # create the progress bar and callback, return the callback
+        self.pbar = tqdm(total=self.total_timesteps)
+
+        return ProgressBarCallback(self.pbar)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):  # close the callback
+        self.pbar.n = self.total_timesteps
+        self.pbar.update(0)
+        self.pbar.close()
 
 def train(args,
           extra_args,
           env,
           ):
-    env_type, env_id = get_env_type(args)
-    alg_kwargs = get_learn_function_defaults(args.alg, env_type)
-    alg_kwargs.update(extra_args)
+    logger.info('PYTROCH')
+    logger.info('PYTROCH')
+    logger.info('PYTROCH')
+    # env_type, env_id = get_env_type(args)
+    # alg_kwargs = get_learn_function_defaults(args.alg, env_type)
+    # alg_kwargs.update(extra_args)
+    #
+    # if args.network:
+    #     alg_kwargs['network'] = args.network
+    # else:
+    #     if alg_kwargs.get('network') is None:
+    #         alg_kwargs['network'] = get_default_network(env_type)
 
-    if args.network:
-        alg_kwargs['network'] = args.network
-    else:
-        if alg_kwargs.get('network') is None:
-            alg_kwargs['network'] = get_default_network(env_type)
-
-    logger.info('Training {} on {}:{} with arguments \n{}'.format(
-        args.alg,
-        env_type,
-        env_id,
-        alg_kwargs))
+    # logger.info('Training {} on {}:{} with arguments \n{}'.format(
+    #     args.alg,
+    #     env_type,
+    #     env_id,
+    #     alg_kwargs))
 
     total_timesteps = int(args.num_timesteps)
     seed = args.seed
-    learn = get_learn_function(args.alg)
-    model = learn(
-        env=env,
-        seed=seed,
-        total_timesteps=total_timesteps,
-        **alg_kwargs
-    )
+
+    from stable_baselines3 import PPO, DQN
+
+    model = DQN('MlpPolicy', env)
+
+    logger.info(model)
+    with ProgressBarManager(timesteps) as pbar_callback:
+        model.learn(total_timesteps, callback=pbar_callback, seed=seed)
+    # learn = get_learn_function(args.alg)
+    # model = learn(
+    #     env=env,
+    #     seed=seed,
+    #     total_timesteps=total_timesteps,
+    #     **alg_kwargs
+    # )
 
     return model
 
@@ -224,12 +269,12 @@ def build_env(args, extra_args):
     for job in workload:
         logger.info(f'{job}')
 
-    env_type, env_id = get_env_type(args)
-    config = tf.ConfigProto(allow_soft_placement=True,
-                            intra_op_parallelism_threads=1,
-                            inter_op_parallelism_threads=1)
-    config.gpu_options.allow_growth = True
-    get_session(config=config, force_recreate=True)
+    # env_type, env_id = get_env_type(args)
+    # config = tf.ConfigProto(allow_soft_placement=True,
+    #                         intra_op_parallelism_threads=1,
+    #                         inter_op_parallelism_threads=1)
+    # config.gpu_options.allow_growth = True
+    # get_session(config=config, force_recreate=True)
 
     initial_s_vm_count = extra_args.get('initial_s_vm_count', initial_vm_count)
     initial_m_vm_count = extra_args.get('initial_m_vm_count', initial_vm_count)
@@ -291,36 +336,36 @@ def get_env_type(args):
     return env_type, env_id
 
 
-def get_default_network(env_type):
-    if env_type in {'atari', 'retro'}:
-        return 'cnn'
-    else:
-        return 'mlp'
-
-
-def get_alg_module(alg, submodule=None):
-    submodule = submodule or alg
-    try:
-        # first try to import the alg module from driver
-        alg_module = import_module('.'.join(['driver', alg, submodule]))
-    except ImportError:
-        # then from rl_algs
-        alg_module = import_module('.'.join(['rl_' + 'algs', alg, submodule]))
-
-    return alg_module
-
-
-def get_learn_function(alg):
-    return get_alg_module(alg).learn
-
-
-def get_learn_function_defaults(alg, env_type):
-    try:
-        alg_defaults = get_alg_module(alg, 'defaults')
-        kwargs = getattr(alg_defaults, env_type)()
-    except (ImportError, AttributeError):
-        kwargs = {}
-    return kwargs
+# def get_default_network(env_type):
+#     if env_type in {'atari', 'retro'}:
+#         return 'cnn'
+#     else:
+#         return 'mlp'
+#
+#
+# def get_alg_module(alg, submodule=None):
+#     submodule = submodule or alg
+#     try:
+#         # first try to import the alg module from driver
+#         alg_module = import_module('.'.join(['driver', alg, submodule]))
+#     except ImportError:
+#         # then from rl_algs
+#         alg_module = import_module('.'.join(['rl_' + 'algs', alg, submodule]))
+#
+#     return alg_module
+#
+#
+# def get_learn_function(alg):
+#     return get_alg_module(alg).learn
+#
+#
+# def get_learn_function_defaults(alg, env_type):
+#     try:
+#         alg_defaults = get_alg_module(alg, 'defaults')
+#         kwargs = getattr(alg_defaults, env_type)()
+#     except (ImportError, AttributeError):
+#         kwargs = {}
+#     return kwargs
 
 
 def parse_cmdline_kwargs(args):
@@ -489,12 +534,12 @@ def training_loop(args, extra_args):
             # if there is no new env it means there was no training data
             # thus there is no need to train and evaluate
             if env is not None:
-                logger.info('New environment built...')
+                logger.info('PYTORCH: New environment built...')
                 model = train(args,
                               updated_extra_args,
                               env)
 
-                model_save_path = f'{base_save_path}_{iterations}.bin'
+                model_save_path = f'{base_save_path}_{iterations}.zip'
                 model.save(model_save_path)
                 previous_model_save_path = model_save_path
                 new_policy_total_reward = test_model(model, env)
