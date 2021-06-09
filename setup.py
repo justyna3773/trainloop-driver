@@ -22,9 +22,14 @@ setup(name='trainloop-driver',
       url='https://gitlab.com/pkoperek/trainingloop-driver',
       author_email='pkoperek@gmail.com',
       version='0.1.0',
+      # entry_points = {
+      #     'console_scripts': ['trainloop=driver.run:main'],
+      # }
       entry_points = {
-          'console_scripts': ['trainloop=driver.run:main'],
-      })
+            'console_scripts': ['trainloop=run:main'],
+      }
+
+)
 
 
 # ensure there is some tensorflow build with version above 1.4
