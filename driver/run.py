@@ -19,7 +19,6 @@ from driver.common.cmd_util import (
     parse_unknown_args,
     make_vec_env,
 )
-from driver.common.tf_util import get_session
 from driver.common.swf_jobs import get_jobs_from_file
 from driver.common.db import (
     get_cores_count_at,
@@ -133,9 +132,6 @@ def train(args,
           extra_args,
           env,
           ):
-    logger.info('PYTROCH')
-    logger.info('PYTROCH')
-    logger.info('PYTROCH')
     # env_type, env_id = get_env_type(args)
     # alg_kwargs = get_learn_function_defaults(args.alg, env_type)
     # alg_kwargs.update(extra_args)
