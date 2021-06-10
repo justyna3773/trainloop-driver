@@ -1,4 +1,4 @@
-FROM python:3.7-slim
+FROM python:3.6
 
 ENV CODE_DIR /root/code
 WORKDIR $CODE_DIR
@@ -13,6 +13,9 @@ COPY requirements.txt $CODE_DIR
 RUN pip3 install -r requirements.txt
 
 COPY . $CODE_DIR
-RUN pip3 install -e .
 
+# ENTRYPOINT ["python3"]
+# CMD ["driver/run.py"]
+
+RUN pip3 install -e .
 CMD /bin/bash

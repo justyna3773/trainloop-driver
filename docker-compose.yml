@@ -39,7 +39,7 @@ services:
       - "5433:5432"
         
   driver:
-    image: pkoperek/trainloop-driver:1.2
+    image: amalota/trainloop-driver:1.3.6
     environment:
       - CLOUDSIM_GATEWAY_HOST=simulator
       - CLOUDSIM_GATEWAY_PORT=25333

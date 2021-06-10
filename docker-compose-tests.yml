@@ -58,8 +58,8 @@ services:
       - CLOUDSIM_GATEWAY_HOST=simulator
       - CLOUDSIM_GATEWAY_PORT=25333
     # Parameters from 10MM
-    command: ["trainloop", 
-              "--env", "ThreeSizeAppEnv-v0", 
+    command: ["trainloop",
+              "--env", "ThreeSizeAppEnv-v0",
               "--simulator_speedup", "60", 
               "--save_path", "/output_models", 
               "--mips_per_core", "3600", 
