@@ -1,7 +1,7 @@
 import pytest
 import gym
 
-from driver.run import get_learn_function
+from run import get_learn_function
 from driver.common.tests.util import reward_per_episode_test
 from driver.common.tests import mark_slow
 

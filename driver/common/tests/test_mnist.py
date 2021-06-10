@@ -3,7 +3,7 @@ import pytest
 # from driver.acer import acer_simple as acer
 from driver.common.tests.envs.mnist_env import MnistEnv
 from driver.common.tests.util import simple_test
-from driver.run import get_learn_function
+from run import get_learn_function
 from driver.common.tests import mark_slow
 
 # TODO investigate a2c and ppo2 failures - is it due to bad hyperparameters for this problem?
