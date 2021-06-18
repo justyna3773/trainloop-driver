@@ -70,14 +70,14 @@ services:
               "--lam", "0.97",
               "--gamma", "0.99",
               "--cliprange", "0.2",
-              "--num_timesteps", "500",    # 2x nsteps
+              "--num_timesteps", "5000",    # 2x nsteps
               "--nsteps", "250",
               "--lr", "0.0003",
               "--network", "lstm",
-              "--iteration_length_s", "10", # 10 for testing, 300 for normal run
+              "--iteration_length_s", "300", # 10 for testing, 300 for normal run
               "--initial_timestamp", "0",
               "--initial_vm_count_no_data", "3",
-              "--initial_model", "/initial_policy/small_policy.bin",
+              "--initial_model", "/best_model/best_model",
               "--nminibatches", "1", # to stop recurrent networks for breaking
               "--continuous_mode"]
     depends_on:
@@ -87,6 +87,7 @@ services:
       - oracle
     volumes:
       - "./output_models:/output_models"
+      - "./best_model:/best_model"
       - "./input_workloads:/input_workloads"
       - "./logs:/logs"
       - "./prod_policy:/initial_policy"

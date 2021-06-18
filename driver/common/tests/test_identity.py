@@ -1,6 +1,6 @@
 import pytest
 from driver.common.tests.envs.identity_env import DiscreteIdentityEnv, BoxIdentityEnv, MultiDiscreteIdentityEnv
-from run import get_learn_function
+from driver.run import get_learn_function
 from driver.common.tests.util import simple_test
 from driver.common.tests import mark_slow
 

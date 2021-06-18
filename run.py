@@ -11,13 +11,15 @@ import requests
 import base64
 import datetime
 import time
+import pandas as pd
 
 from collections import defaultdict
-from driver.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3 import PPO, DQN
 from driver.common.cmd_util import (
     common_arg_parser,
-    parse_unknown_args,
-    make_vec_env,
+    parse_unknown_args
 )
 from driver.common.swf_jobs import get_jobs_from_file
 from driver.common.db import (
@@ -128,36 +130,20 @@ class ProgressBarManager(object):
         self.pbar.update(0)
         self.pbar.close()
 
+
 def train(args,
           extra_args,
           env,
           ):
-    # env_type, env_id = get_env_type(args)
-    # alg_kwargs = get_learn_function_defaults(args.alg, env_type)
-    # alg_kwargs.update(extra_args)
-    #
-    # if args.network:
-    #     alg_kwargs['network'] = args.network
-    # else:
-    #     if alg_kwargs.get('network') is None:
-    #         alg_kwargs['network'] = get_default_network(env_type)
-
-    # logger.info('Training {} on {}:{} with arguments \n{}'.format(
-    #     args.alg,
-    #     env_type,
-    #     env_id,
-    #     alg_kwargs))
 
     total_timesteps = int(args.num_timesteps)
     seed = args.seed
 
-    from stable_baselines3 import PPO, DQN
-
     model = DQN('MlpPolicy', env)
 
     logger.info(model)
-    with ProgressBarManager(timesteps) as pbar_callback:
-        model.learn(total_timesteps, callback=pbar_callback, seed=seed)
+    with ProgressBarManager(total_timesteps) as pbar_callback:
+        model.learn(total_timesteps, callback=pbar_callback)
     # learn = get_learn_function(args.alg)
     # model = learn(
     #     env=env,
@@ -265,7 +251,8 @@ def build_env(args, extra_args):
     for job in workload:
         logger.info(f'{job}')
 
-    # env_type, env_id = get_env_type(args)
+    env_type, env_id = get_env_type(args)
+    logger.info(f'Env type: {env_type}, env id: {env_id}')
     # config = tf.ConfigProto(allow_soft_placement=True,
     #                         intra_op_parallelism_threads=1,
     #                         inter_op_parallelism_threads=1)
@@ -291,13 +278,10 @@ def build_env(args, extra_args):
         'vm_hourly_running_cost': s_vm_hourly_running_cost,
     }
 
-    flatten_dict_observations = alg not in {'her'}
-    env = make_vec_env(env_id,
-                       env_type,
-                       args.num_env or 1,
-                       seed,
-                       reward_scale=args.reward_scale,
-                       flatten_dict_observations=flatten_dict_observations,
+    logger.info(args)
+    env = make_vec_env(env_id=env_id,
+                       n_envs=args.num_env or 1,
+                       # seed=seed,
                        env_kwargs=env_kwargs,
                        )
 
@@ -332,38 +316,6 @@ def get_env_type(args):
     return env_type, env_id
 
 
-# def get_default_network(env_type):
-#     if env_type in {'atari', 'retro'}:
-#         return 'cnn'
-#     else:
-#         return 'mlp'
-#
-#
-# def get_alg_module(alg, submodule=None):
-#     submodule = submodule or alg
-#     try:
-#         # first try to import the alg module from driver
-#         alg_module = import_module('.'.join(['driver', alg, submodule]))
-#     except ImportError:
-#         # then from rl_algs
-#         alg_module = import_module('.'.join(['rl_' + 'algs', alg, submodule]))
-#
-#     return alg_module
-#
-#
-# def get_learn_function(alg):
-#     return get_alg_module(alg).learn
-#
-#
-# def get_learn_function_defaults(alg, env_type):
-#     try:
-#         alg_defaults = get_alg_module(alg, 'defaults')
-#         kwargs = getattr(alg_defaults, env_type)()
-#     except (ImportError, AttributeError):
-#         kwargs = {}
-#     return kwargs
-
-
 def parse_cmdline_kwargs(args):
     '''
     convert a list of '='-spaced command-line arguments to a dictionary,
@@ -393,18 +345,41 @@ def test_model(model, env):
     episode_rew = 0
     done = False
     while not done:
+        print(obs)
         if state is not None:
-            actions, _, state, _ = model.step(obs, S=state, M=dones)
+            actions, _, state, _ = model.predict(obs, S=state, M=dones)
         else:
-            actions, _, _, _ = model.step(obs)
+            actions, _states = model.predict(obs)
 
         obs, rew, done, _ = env.step(actions)
         episode_rew += rew
-        #obs_arr = env.render(mode='array')
-        #obs_last = [serie[-1] for serie in obs_arr]
-        #print(f'{obs_last} | rew: {rew} | ep_rew: {episode_rew}')
+        obs_arr = env.render(mode='array')
+        obs_last = [serie[-1] for serie in obs_arr]
+        print(f'{obs_last} | rew: {rew} | ep_rew: {episode_rew}')
+
+    if isinstance(episode_rew, list):
+        episode_rew = episode_rew[0]
 
     return episode_rew
+
+
+def collect_observations(model, env):
+    obs = env.reset()
+    state = model.initial_state if hasattr(model, 'initial_state') else None
+    dones = np.zeros((1,))
+    episode_rew = 0
+    done = False
+    while not done:
+        print(obs)
+        if state is not None:
+            actions, _, state, _ = model.predict(obs, S=state, M=dones)
+        else:
+            actions, _states = model.predict(obs)
+
+        obs, rew, done, _ = env.step(actions)
+        episode_rew += rew
+        obs_arr = env.render(mode='array')
+        obs_last = [serie[-1] for serie in obs_arr]
 
 
 def update_oracle_policy(model_save_path):
@@ -449,9 +424,15 @@ def training_loop(args, extra_args):
 
     date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
     base_save_path = os.path.join(base_save_path, date_tag)
+
+    best_model_path = '/best_model/best_model'
+    best_model_replay_buffer_path = '/best_model/best_model_rb/'
+
+    old_policy_total_reward = None
     prev_tstamp_for_db = None
     previous_model_save_path = None
     current_oracle_model = args.initial_model
+    rewards = []
 
     logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
                f'data is gathered for simulation')
@@ -526,39 +507,58 @@ def training_loop(args, extra_args):
             })
 
             env = build_env(args, updated_extra_args)
-
             # if there is no new env it means there was no training data
             # thus there is no need to train and evaluate
             if env is not None:
-                logger.info('PYTORCH: New environment built...')
+                logger.info('New environment built...')
                 model = train(args,
                               updated_extra_args,
                               env)
 
                 model_save_path = f'{base_save_path}_{iterations}.zip'
+                model_replay_buffer_save_path = f'{base_save_path}_{iterations}_rb/'
                 model.save(model_save_path)
+                model.save_replay_buffer(model_replay_buffer_save_path)
                 previous_model_save_path = model_save_path
-                new_policy_total_reward = test_model(model, env)
 
-                if current_oracle_model:
-                    model.load(current_oracle_model)
-                    old_policy_total_reward = test_model(model, env)
-                else:
-                    old_policy_total_reward = None
+                logger.info(f'Test model after {iterations} iterations')
+                new_policy_total_reward = test_model(model, env)
+                rewards.append(new_policy_total_reward)
+
+                rewards_df = pd.DataFrame(rewards, columns=['reward'])
+                rewards_df.to_csv('/best_model/best_model_rewards.csv')
+
+                if old_policy_total_reward is None:
+                    best_model = DQN.load(best_model_path)
+                    old_policy_total_reward = test_model(best_model, env)
 
                 logger.info(f'Old policy reward: {old_policy_total_reward} '
                             f'new policy reward: {new_policy_total_reward}')
-                if old_policy_total_reward:
-                    if new_policy_total_reward > old_policy_total_reward:
-                        logger.info('New policy has a higher reward, '
-                                    'updating the policy')
-                        update_oracle_policy(model_save_path)
-                        current_oracle_model = model_save_path
-                else:
-                    logger.info('The old policy do not exist - we choose to '
-                                'do an update')
-                    update_oracle_policy(model_save_path)
-                    current_oracle_model = model_save_path
+                if new_policy_total_reward > old_policy_total_reward:
+                    logger.info('New policy has a higher reward, updating the policy')
+                    model.save(best_model_path)
+                    model.save_replay_buffer(best_model_replay_buffer_path)
+                    old_policy_total_reward = new_policy_total_reward
+
+                # if current_oracle_model:
+                #     model.load(current_oracle_model)
+                #     old_policy_total_reward = test_model(model, env)
+                # else:
+                #     old_policy_total_reward = None
+                #
+                # logger.info(f'Old policy reward: {old_policy_total_reward} '
+                #             f'new policy reward: {new_policy_total_reward}')
+                # if old_policy_total_reward:
+                #     if new_policy_total_reward > old_policy_total_reward:
+                #         logger.info('New policy has a higher reward, '
+                #                     'updating the policy')
+                #         update_oracle_policy(model_save_path)
+                #         current_oracle_model = model_save_path
+                # else:
+                #     logger.info('The old policy do not exist - we choose to '
+                #                 'do an update')
+                #     update_oracle_policy(model_save_path)
+                #     current_oracle_model = model_save_path
             else:
                 logger.info('The environment has not changed, training and '
                             'evaluation skipped')

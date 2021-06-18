@@ -24,6 +24,6 @@ setup(name='trainloop-driver',
       author_email='pkoperek@gmail.com',
       version='0.1.0',
       entry_points={
-          'console_scripts': ['trainloop=driver.run:main'],
+          'console_scripts': ['trainloop=run:main'],
       }
       )

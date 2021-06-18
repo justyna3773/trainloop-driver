@@ -3,7 +3,7 @@ import gym
 import tensorflow as tf
 
 from driver.common.vec_env.subproc_vec_env import SubprocVecEnv
-from run import get_learn_function
+from driver.run import get_learn_function
 from driver.common.tf_util import make_session
 
 algos = ['a2c', 'acer', 'acktr', 'deepq', 'ppo2', 'trpo_mpi']

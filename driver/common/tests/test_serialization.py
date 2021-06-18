@@ -7,7 +7,7 @@ import numpy as np
 
 from driver.common.tests.envs.mnist_env import MnistEnv
 from driver.common.vec_env.dummy_vec_env import DummyVecEnv
-from run import get_learn_function
+from driver.run import get_learn_function
 from driver.common.tf_util import make_session, get_session
 
 from functools import partial
