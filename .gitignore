@@ -1,6 +1,7 @@
 *.pem*
 aws-creds
 output_model/**
+output_models/
 ignored/**
 .direnv
 *.swp
