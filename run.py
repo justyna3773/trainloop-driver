@@ -1,40 +1,38 @@
-import sys
-import os
-import re
-import math
-import os.path as osp
-import gym
-import gym_cloudsimplus
-import numpy as np
-import json
-import requests
 import base64
 import datetime
-import time
+import gym
+import gym_cloudsimplus
+import json
+import math
+import numpy as np
+import os
+import os.path as osp
 import pandas as pd
-
+import re
+import requests
+import sys
+import time
 from collections import defaultdict
-from stable_baselines3.common.vec_env import VecEnv
+from importlib import import_module
+import stable_baselines3
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3 import PPO, DQN
+from stable_baselines3.common.vec_env import VecEnv
+
+from driver import logger
 from driver.common.cmd_util import (
     common_arg_parser,
     parse_unknown_args
 )
-from driver.common.swf_jobs import get_jobs_from_file
 from driver.common.db import (
     get_cores_count_at,
     get_jobs_between,
     init_dbs,
 )
-from driver import logger
-from importlib import import_module
-
+from driver.common.swf_jobs import get_jobs_from_file
 
 submitted_jobs_cnt: int = 0
 oracle_update_url: str = os.getenv("ORACLE_UPDATE_URL",
                                    "http://oracle:8080/update")
-
 
 test_workload = [
     {
@@ -87,7 +85,6 @@ test_workload = [
     }
 ]
 
-
 _game_envs = defaultdict(set)
 for env in gym.envs.registry.all():
     # TODO: solve this with regexes
@@ -132,14 +129,11 @@ class ProgressBarManager(object):
 
 
 def train(args,
+          model,
           extra_args,
           env,
           ):
-
     total_timesteps = int(args.num_timesteps)
-    seed = args.seed
-
-    model = DQN('MlpPolicy', env)
 
     logger.info(model)
     with ProgressBarManager(total_timesteps) as pbar_callback:
@@ -276,6 +270,7 @@ def build_env(args, extra_args):
         'simulation_speedup': str(simulator_speedup),
         'split_large_jobs': 'true',
         'vm_hourly_running_cost': s_vm_hourly_running_cost,
+        'observation_history_length': args.observation_history_length
     }
 
     logger.info(args)
@@ -321,6 +316,7 @@ def parse_cmdline_kwargs(args):
     convert a list of '='-spaced command-line arguments to a dictionary,
     evaluating python objects when possible
     '''
+
     def parse(v):
         assert isinstance(v, str)
         try:
@@ -338,48 +334,34 @@ def configure_logger(log_path, **kwargs):
         logger.configure(**kwargs)
 
 
-def test_model(model, env):
-    obs = env.reset()
-    state = model.initial_state if hasattr(model, 'initial_state') else None
-    dones = np.zeros((1,))
-    episode_rew = 0
-    done = False
-    while not done:
-        print(obs)
-        if state is not None:
-            actions, _, state, _ = model.predict(obs, S=state, M=dones)
-        else:
-            actions, _states = model.predict(obs)
+def test_model(model, env, n_runs=3):
+    episode_rewards = []
+    for i in range(n_runs):
+        obs = env.reset()
+        state = model.initial_state if hasattr(model, 'initial_state') else None
+        dones = np.zeros((1,))
+        episode_reward = 0
+        done = False
+        while not done:
+            print(obs)
+            if state is not None:
+                actions, _, state, _ = model.predict(obs, S=state, M=dones)
+            else:
+                actions, _states = model.predict(obs)
+            obs, rew, done, _ = env.step(actions)
+            episode_reward += rew
+            obs_arr = env.render(mode='array')
+            obs_last = [serie[-1] for serie in obs_arr]
+            print(f'{obs_last} | rew: {rew} | ep_rew: {episode_reward}')
 
-        obs, rew, done, _ = env.step(actions)
-        episode_rew += rew
-        obs_arr = env.render(mode='array')
-        obs_last = [serie[-1] for serie in obs_arr]
-        print(f'{obs_last} | rew: {rew} | ep_rew: {episode_rew}')
+        if isinstance(episode_reward, list):
+            episode_reward = episode_reward[0]
 
-    if isinstance(episode_rew, list):
-        episode_rew = episode_rew[0]
+        episode_rewards.append(episode_reward)
 
-    return episode_rew
-
-
-def collect_observations(model, env):
-    obs = env.reset()
-    state = model.initial_state if hasattr(model, 'initial_state') else None
-    dones = np.zeros((1,))
-    episode_rew = 0
-    done = False
-    while not done:
-        print(obs)
-        if state is not None:
-            actions, _, state, _ = model.predict(obs, S=state, M=dones)
-        else:
-            actions, _states = model.predict(obs)
-
-        obs, rew, done, _ = env.step(actions)
-        episode_rew += rew
-        obs_arr = env.render(mode='array')
-        obs_last = [serie[-1] for serie in obs_arr]
+    mean_episode_reward = np.array(episode_rewards).mean()
+    print(f'Mean reward after {n_runs} runs: {mean_episode_reward}')
+    return mean_episode_reward
 
 
 def update_oracle_policy(model_save_path):
@@ -421,19 +403,26 @@ def training_loop(args, extra_args):
     iterations = 0
     running = True
     env = None
+    algo = args.algo
+    policy = args.policy
+    AlgoClass = getattr(stable_baselines3, algo)
 
+    algo_tag = f"{algo.lower()}/{policy}"
+    base_save_path = os.path.join(base_save_path, algo_tag)
     date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
     base_save_path = os.path.join(base_save_path, date_tag)
 
-    best_model_path = '/best_model/best_model'
-    best_model_replay_buffer_path = '/best_model/best_model_rb/'
+    best_model_path = f'/best_model/{algo.lower()}/{policy}/best_model/'
+    best_model_replay_buffer_path = f'/best_model/{algo.lower()}/{policy}/best_model_rb/'
 
-    old_policy_total_reward = None
+    best_policy_total_reward = None
     prev_tstamp_for_db = None
     previous_model_save_path = None
+    tensorboard_log = f"/output_models/{algo.lower()}/{policy}/"
     current_oracle_model = args.initial_model
     rewards = []
 
+    logger.log(f'Using {algo} with {policy}')
     logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
                f'data is gathered for simulation')
     time.sleep(iteration_length_s)
@@ -492,33 +481,44 @@ def training_loop(args, extra_args):
         if all([data_available(v) for k, v in cores_count.items()]):
             logger.log(f'Initial cores: {cores_count}')
 
-            if previous_model_save_path:
-                load_path = previous_model_save_path
-            else:
-                logger.info(f'No model from previous iteration, using the '
-                            f'initial one: {args.initial_model}')
-                load_path = args.initial_model
-
             updated_extra_args.update({
-                'initial_s_vm_count': math.floor(cores_count['s_cores']/2),
-                'initial_m_vm_count': math.floor(cores_count['m_cores']/2),
-                'initial_l_vm_count': math.floor(cores_count['l_cores']/2),
-                'load_path': load_path,
+                'initial_s_vm_count': math.floor(cores_count['s_cores'] / 2),
+                'initial_m_vm_count': math.floor(cores_count['m_cores'] / 2),
+                'initial_l_vm_count': math.floor(cores_count['l_cores'] / 2),
             })
 
             env = build_env(args, updated_extra_args)
             # if there is no new env it means there was no training data
             # thus there is no need to train and evaluate
             if env is not None:
+                if previous_model_save_path:
+                    model = AlgoClass.load(path=previous_model_save_path,
+                                           env=env,
+                                           tensorboard_log=tensorboard_log)
+                else:
+                    if args.initial_model:
+                        logger.info(f'No model from previous iteration, using the '
+                                    f'initial one: {args.initial_model}')
+                        model = AlgoClass.load(path=args.initial_model,
+                                               env=env,
+                                               tensorboard_log=tensorboard_log)
+                    else:
+                        logger.info(f'No model from previous iteration and no initial model, creating '
+                                    f'new model: {args.initial_model}')
+                        model = AlgoClass(policy=policy,
+                                          env=env,
+                                          tensorboard_log=tensorboard_log)
+
                 logger.info('New environment built...')
                 model = train(args,
+                              model,
                               updated_extra_args,
                               env)
 
                 model_save_path = f'{base_save_path}_{iterations}.zip'
-                model_replay_buffer_save_path = f'{base_save_path}_{iterations}_rb/'
                 model.save(model_save_path)
-                model.save_replay_buffer(model_replay_buffer_save_path)
+                # model_replay_buffer_save_path = f'{base_save_path}_{iterations}_rb/'
+                # model.save_replay_buffer(model_replay_buffer_save_path)
                 previous_model_save_path = model_save_path
 
                 logger.info(f'Test model after {iterations} iterations')
@@ -526,39 +526,22 @@ def training_loop(args, extra_args):
                 rewards.append(new_policy_total_reward)
 
                 rewards_df = pd.DataFrame(rewards, columns=['reward'])
-                rewards_df.to_csv('/best_model/best_model_rewards.csv')
+                rewards_df.to_csv(f'/best_model/{algo.lower()}/{policy}/best_model_rewards.csv')
 
-                if old_policy_total_reward is None:
-                    best_model = DQN.load(best_model_path)
-                    old_policy_total_reward = test_model(best_model, env)
+                if iterations > 0:
+                    if best_policy_total_reward is None:
+                        best_model = AlgoClass.load(best_model_path)
+                        best_policy_total_reward = test_model(best_model, env)
 
-                logger.info(f'Old policy reward: {old_policy_total_reward} '
-                            f'new policy reward: {new_policy_total_reward}')
-                if new_policy_total_reward > old_policy_total_reward:
-                    logger.info('New policy has a higher reward, updating the policy')
+                    logger.info(f'Best policy reward: {best_policy_total_reward} '
+                                f'new policy reward: {new_policy_total_reward}')
+                    if new_policy_total_reward > best_policy_total_reward:
+                        logger.info('New policy has a higher reward, updating the policy')
+                        model.save(best_model_path)
+                        model.save_replay_buffer(best_model_replay_buffer_path)
+                        best_policy_total_reward = new_policy_total_reward
+                else:
                     model.save(best_model_path)
-                    model.save_replay_buffer(best_model_replay_buffer_path)
-                    old_policy_total_reward = new_policy_total_reward
-
-                # if current_oracle_model:
-                #     model.load(current_oracle_model)
-                #     old_policy_total_reward = test_model(model, env)
-                # else:
-                #     old_policy_total_reward = None
-                #
-                # logger.info(f'Old policy reward: {old_policy_total_reward} '
-                #             f'new policy reward: {new_policy_total_reward}')
-                # if old_policy_total_reward:
-                #     if new_policy_total_reward > old_policy_total_reward:
-                #         logger.info('New policy has a higher reward, '
-                #                     'updating the policy')
-                #         update_oracle_policy(model_save_path)
-                #         current_oracle_model = model_save_path
-                # else:
-                #     logger.info('The old policy do not exist - we choose to '
-                #                 'do an update')
-                #     update_oracle_policy(model_save_path)
-                #     current_oracle_model = model_save_path
             else:
                 logger.info('The environment has not changed, training and '
                             'evaluation skipped')

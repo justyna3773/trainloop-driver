@@ -36,7 +36,7 @@ htmlcov
 
 junk
 src
-
+§
 *.egg-info
 .cache
 
@@ -44,4 +44,3 @@ MUJOCO_LOG.TXT
 
 # To avoid adding pem files to git
 *.pem
-/output_models/
