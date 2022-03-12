@@ -538,7 +538,10 @@ def training_loop(args, extra_args):
                     if new_policy_total_reward > best_policy_total_reward:
                         logger.info('New policy has a higher reward, updating the policy')
                         model.save(best_model_path)
-                        model.save_replay_buffer(best_model_replay_buffer_path)
+                        try:
+                            model.save_replay_buffer(best_model_replay_buffer_path)
+                        except AttributeError:
+                            pass
                         best_policy_total_reward = new_policy_total_reward
                 else:
                     model.save(best_model_path)

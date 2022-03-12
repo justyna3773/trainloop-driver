@@ -1,40 +1,38 @@
-import sys
-import os
-import re
-import math
-import os.path as osp
-import gym
-import gym_cloudsimplus
-import tensorflow as tf
-import numpy as np
-import json
-import requests
 import base64
 import datetime
+import gym
+import gym_cloudsimplus
+import json
+import math
+import numpy as np
+import os
+import os.path as osp
+import pandas as pd
+import re
+import requests
+import sys
 import time
-
 from collections import defaultdict
-from driver.common.vec_env import VecEnv
+from importlib import import_module
+import stable_baselines3
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import VecEnv
+
+from driver import logger
 from driver.common.cmd_util import (
     common_arg_parser,
-    parse_unknown_args,
-    make_vec_env,
+    parse_unknown_args
 )
-from driver.common.tf_util import get_session
-from driver.common.swf_jobs import get_jobs_from_file
 from driver.common.db import (
     get_cores_count_at,
     get_jobs_between,
     init_dbs,
 )
-from driver import logger
-from importlib import import_module
-
+from driver.common.swf_jobs import get_jobs_from_file
 
 submitted_jobs_cnt: int = 0
 oracle_update_url: str = os.getenv("ORACLE_UPDATE_URL",
                                    "http://oracle:8080/update")
-
 
 test_workload = [
     {
@@ -87,43 +85,66 @@ test_workload = [
     }
 ]
 
-
 _game_envs = defaultdict(set)
 for env in gym.envs.registry.all():
     # TODO: solve this with regexes
     env_type = env.entry_point.split(':')[0].split('.')[-1]
     _game_envs[env_type].add(env.id)
 
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.results_plotter import load_results, ts2xy
+from tqdm.auto import tqdm
+
+
+class ProgressBarCallback(BaseCallback):
+    """
+    :param pbar: (tqdm.pbar) Progress bar object
+    """
+
+    def __init__(self, pbar):
+        super(ProgressBarCallback, self).__init__()
+        self._pbar = pbar
+
+    def _on_step(self):
+        # Update the progress bar:
+        self._pbar.n = self.num_timesteps
+        self._pbar.update(0)
+
+
+# this callback uses the 'with' block, allowing for correct initialisation and destruction
+class ProgressBarManager(object):
+    def __init__(self, total_timesteps):  # init object with total timesteps
+        self.pbar = None
+        self.total_timesteps = total_timesteps
+
+    def __enter__(self):  # create the progress bar and callback, return the callback
+        self.pbar = tqdm(total=self.total_timesteps)
+
+        return ProgressBarCallback(self.pbar)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):  # close the callback
+        self.pbar.n = self.total_timesteps
+        self.pbar.update(0)
+        self.pbar.close()
+
 
 def train(args,
+          model,
           extra_args,
           env,
           ):
-    env_type, env_id = get_env_type(args)
-    alg_kwargs = get_learn_function_defaults(args.alg, env_type)
-    alg_kwargs.update(extra_args)
-
-    if args.network:
-        alg_kwargs['network'] = args.network
-    else:
-        if alg_kwargs.get('network') is None:
-            alg_kwargs['network'] = get_default_network(env_type)
-
-    logger.info('Training {} on {}:{} with arguments \n{}'.format(
-        args.alg,
-        env_type,
-        env_id,
-        alg_kwargs))
-
     total_timesteps = int(args.num_timesteps)
-    seed = args.seed
-    learn = get_learn_function(args.alg)
-    model = learn(
-        env=env,
-        seed=seed,
-        total_timesteps=total_timesteps,
-        **alg_kwargs
-    )
+
+    logger.info(model)
+    with ProgressBarManager(total_timesteps) as pbar_callback:
+        model.learn(total_timesteps, callback=pbar_callback)
+    # learn = get_learn_function(args.alg)
+    # model = learn(
+    #     env=env,
+    #     seed=seed,
+    #     total_timesteps=total_timesteps,
+    #     **alg_kwargs
+    # )
 
     return model
 
@@ -225,11 +246,12 @@ def build_env(args, extra_args):
         logger.info(f'{job}')
 
     env_type, env_id = get_env_type(args)
-    config = tf.ConfigProto(allow_soft_placement=True,
-                            intra_op_parallelism_threads=1,
-                            inter_op_parallelism_threads=1)
-    config.gpu_options.allow_growth = True
-    get_session(config=config, force_recreate=True)
+    logger.info(f'Env type: {env_type}, env id: {env_id}')
+    # config = tf.ConfigProto(allow_soft_placement=True,
+    #                         intra_op_parallelism_threads=1,
+    #                         inter_op_parallelism_threads=1)
+    # config.gpu_options.allow_growth = True
+    # get_session(config=config, force_recreate=True)
 
     initial_s_vm_count = extra_args.get('initial_s_vm_count', initial_vm_count)
     initial_m_vm_count = extra_args.get('initial_m_vm_count', initial_vm_count)
@@ -248,15 +270,13 @@ def build_env(args, extra_args):
         'simulation_speedup': str(simulator_speedup),
         'split_large_jobs': 'true',
         'vm_hourly_running_cost': s_vm_hourly_running_cost,
+        'observation_history_length': args.observation_history_length
     }
 
-    flatten_dict_observations = alg not in {'her'}
-    env = make_vec_env(env_id,
-                       env_type,
-                       args.num_env or 1,
-                       seed,
-                       reward_scale=args.reward_scale,
-                       flatten_dict_observations=flatten_dict_observations,
+    logger.info(args)
+    env = make_vec_env(env_id=env_id,
+                       n_envs=args.num_env or 1,
+                       # seed=seed,
                        env_kwargs=env_kwargs,
                        )
 
@@ -291,43 +311,12 @@ def get_env_type(args):
     return env_type, env_id
 
 
-def get_default_network(env_type):
-    if env_type in {'atari', 'retro'}:
-        return 'cnn'
-    else:
-        return 'mlp'
-
-
-def get_alg_module(alg, submodule=None):
-    submodule = submodule or alg
-    try:
-        # first try to import the alg module from driver
-        alg_module = import_module('.'.join(['driver', alg, submodule]))
-    except ImportError:
-        # then from rl_algs
-        alg_module = import_module('.'.join(['rl_' + 'algs', alg, submodule]))
-
-    return alg_module
-
-
-def get_learn_function(alg):
-    return get_alg_module(alg).learn
-
-
-def get_learn_function_defaults(alg, env_type):
-    try:
-        alg_defaults = get_alg_module(alg, 'defaults')
-        kwargs = getattr(alg_defaults, env_type)()
-    except (ImportError, AttributeError):
-        kwargs = {}
-    return kwargs
-
-
 def parse_cmdline_kwargs(args):
     '''
     convert a list of '='-spaced command-line arguments to a dictionary,
     evaluating python objects when possible
     '''
+
     def parse(v):
         assert isinstance(v, str)
         try:
@@ -345,25 +334,34 @@ def configure_logger(log_path, **kwargs):
         logger.configure(**kwargs)
 
 
-def test_model(model, env):
-    obs = env.reset()
-    state = model.initial_state if hasattr(model, 'initial_state') else None
-    dones = np.zeros((1,))
-    episode_rew = 0
-    done = False
-    while not done:
-        if state is not None:
-            actions, _, state, _ = model.step(obs, S=state, M=dones)
-        else:
-            actions, _, _, _ = model.step(obs)
+def test_model(model, env, n_runs=3):
+    episode_rewards = []
+    for i in range(n_runs):
+        obs = env.reset()
+        state = model.initial_state if hasattr(model, 'initial_state') else None
+        dones = np.zeros((1,))
+        episode_reward = 0
+        done = False
+        while not done:
+            print(obs)
+            if state is not None:
+                actions, _, state, _ = model.predict(obs, S=state, M=dones)
+            else:
+                actions, _states = model.predict(obs)
+            obs, rew, done, _ = env.step(actions)
+            episode_reward += rew
+            obs_arr = env.render(mode='array')
+            obs_last = [serie[-1] for serie in obs_arr]
+            print(f'{obs_last} | rew: {rew} | ep_rew: {episode_reward}')
 
-        obs, rew, done, _ = env.step(actions)
-        episode_rew += rew
-        #obs_arr = env.render(mode='array')
-        #obs_last = [serie[-1] for serie in obs_arr]
-        #print(f'{obs_last} | rew: {rew} | ep_rew: {episode_rew}')
+        if isinstance(episode_reward, list):
+            episode_reward = episode_reward[0]
 
-    return episode_rew
+        episode_rewards.append(episode_reward)
+
+    mean_episode_reward = np.array(episode_rewards).mean()
+    print(f'Mean reward after {n_runs} runs: {mean_episode_reward}')
+    return mean_episode_reward
 
 
 def update_oracle_policy(model_save_path):
@@ -405,13 +403,26 @@ def training_loop(args, extra_args):
     iterations = 0
     running = True
     env = None
+    algo = args.algo
+    policy = args.policy
+    AlgoClass = getattr(stable_baselines3, algo)
 
+    algo_tag = f"{algo.lower()}/{policy}"
+    base_save_path = os.path.join(base_save_path, algo_tag)
     date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
     base_save_path = os.path.join(base_save_path, date_tag)
+
+    best_model_path = f'/best_model/{algo.lower()}/{policy}/best_model/'
+    best_model_replay_buffer_path = f'/best_model/{algo.lower()}/{policy}/best_model_rb/'
+
+    best_policy_total_reward = None
     prev_tstamp_for_db = None
     previous_model_save_path = None
+    tensorboard_log = f"/output_models/{algo.lower()}/{policy}/"
     current_oracle_model = args.initial_model
+    rewards = []
 
+    logger.log(f'Using {algo} with {policy}')
     logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
                f'data is gathered for simulation')
     time.sleep(iteration_length_s)
@@ -470,54 +481,70 @@ def training_loop(args, extra_args):
         if all([data_available(v) for k, v in cores_count.items()]):
             logger.log(f'Initial cores: {cores_count}')
 
-            if previous_model_save_path:
-                load_path = previous_model_save_path
-            else:
-                logger.info(f'No model from previous iteration, using the '
-                            f'initial one: {args.initial_model}')
-                load_path = args.initial_model
-
             updated_extra_args.update({
-                'initial_s_vm_count': math.floor(cores_count['s_cores']/2),
-                'initial_m_vm_count': math.floor(cores_count['m_cores']/2),
-                'initial_l_vm_count': math.floor(cores_count['l_cores']/2),
-                'load_path': load_path,
+                'initial_s_vm_count': math.floor(cores_count['s_cores'] / 2),
+                'initial_m_vm_count': math.floor(cores_count['m_cores'] / 2),
+                'initial_l_vm_count': math.floor(cores_count['l_cores'] / 2),
             })
 
             env = build_env(args, updated_extra_args)
-
             # if there is no new env it means there was no training data
             # thus there is no need to train and evaluate
             if env is not None:
+                if previous_model_save_path:
+                    model = AlgoClass.load(path=previous_model_save_path,
+                                           env=env,
+                                           tensorboard_log=tensorboard_log)
+                else:
+                    if args.initial_model:
+                        logger.info(f'No model from previous iteration, using the '
+                                    f'initial one: {args.initial_model}')
+                        model = AlgoClass.load(path=args.initial_model,
+                                               env=env,
+                                               tensorboard_log=tensorboard_log)
+                    else:
+                        logger.info(f'No model from previous iteration and no initial model, creating '
+                                    f'new model: {args.initial_model}')
+                        model = AlgoClass(policy=policy,
+                                          env=env,
+                                          tensorboard_log=tensorboard_log)
+
                 logger.info('New environment built...')
                 model = train(args,
+                              model,
                               updated_extra_args,
                               env)
 
-                model_save_path = f'{base_save_path}_{iterations}.bin'
+                model_save_path = f'{base_save_path}_{iterations}.zip'
                 model.save(model_save_path)
+                # model_replay_buffer_save_path = f'{base_save_path}_{iterations}_rb/'
+                # model.save_replay_buffer(model_replay_buffer_save_path)
                 previous_model_save_path = model_save_path
+
+                logger.info(f'Test model after {iterations} iterations')
                 new_policy_total_reward = test_model(model, env)
+                rewards.append(new_policy_total_reward)
 
-                if current_oracle_model:
-                    model.load(current_oracle_model)
-                    old_policy_total_reward = test_model(model, env)
-                else:
-                    old_policy_total_reward = None
+                rewards_df = pd.DataFrame(rewards, columns=['reward'])
+                rewards_df.to_csv(f'/best_model/{algo.lower()}/{policy}/best_model_rewards.csv')
 
-                logger.info(f'Old policy reward: {old_policy_total_reward} '
-                            f'new policy reward: {new_policy_total_reward}')
-                if old_policy_total_reward:
-                    if new_policy_total_reward > old_policy_total_reward:
-                        logger.info('New policy has a higher reward, '
-                                    'updating the policy')
-                        update_oracle_policy(model_save_path)
-                        current_oracle_model = model_save_path
+                if iterations > 0:
+                    if best_policy_total_reward is None:
+                        best_model = AlgoClass.load(best_model_path)
+                        best_policy_total_reward = test_model(best_model, env)
+
+                    logger.info(f'Best policy reward: {best_policy_total_reward} '
+                                f'new policy reward: {new_policy_total_reward}')
+                    if new_policy_total_reward > best_policy_total_reward:
+                        logger.info('New policy has a higher reward, updating the policy')
+                        model.save(best_model_path)
+                        try:
+                            model.save_replay_buffer(best_model_replay_buffer_path)
+                        except AttributeError:
+                            pass
+                        best_policy_total_reward = new_policy_total_reward
                 else:
-                    logger.info('The old policy do not exist - we choose to '
-                                'do an update')
-                    update_oracle_policy(model_save_path)
-                    current_oracle_model = model_save_path
+                    model.save(best_model_path)
             else:
                 logger.info('The environment has not changed, training and '
                             'evaluation skipped')

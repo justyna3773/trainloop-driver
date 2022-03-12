@@ -22,7 +22,7 @@ setup(name='trainloop-driver',
       author='Pawel Koperek',
       url='https://gitlab.com/pkoperek/trainingloop-driver',
       author_email='pkoperek@gmail.com',
-      version='0.1.0',
+      version='0.1.1',
       entry_points={
           'console_scripts': ['trainloop=run:main'],
       }

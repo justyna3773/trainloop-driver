@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../gym_cloudsimplus"
+		},
+		{
+			"path": "../../stable-baselines3"
+		}
+	],
+	"settings": {}
+}
