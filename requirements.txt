@@ -10,7 +10,8 @@ pandas==1.1.5
 # git+https://github.com/pkoperek/gym_cloudsimplus#egg=gym_cloudsimplus
 git+https://github.com/andrzejmalota/gym_cloudsimplus@pytorch_cnn#egg=gym_cloudsimplus
 # stable-baselines3[extra]==1.0
-git+https://github.com/andrzejmalota/stable-baselines3@custom_cnn_env#egg=stable-baselines3
+# git+https://github.com/andrzejmalota/stable-baselines3@custom_cnn_env#egg=stable-baselines3
+git+https://github.com/andrzejmalota/stable-baselines3#egg=stable-baselines3
 SQLAlchemy==1.4.16
 psycopg2-binary==2.8.5
 torch==1.8
