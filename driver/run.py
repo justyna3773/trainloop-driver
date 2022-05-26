@@ -504,7 +504,7 @@ def training_loop(args, extra_args):
                                                tensorboard_log=tensorboard_log)
                     else:
                         logger.info(f'No model from previous iteration and no initial model, creating '
-                                    f'new model: {args.initial_model}')
+                                    f'new model with algo: {args.algo}')
                         model = AlgoClass(policy=policy,
                                           env=env,
                                           tensorboard_log=tensorboard_log)
@@ -538,10 +538,11 @@ def training_loop(args, extra_args):
                     if new_policy_total_reward > best_policy_total_reward:
                         logger.info('New policy has a higher reward, updating the policy')
                         model.save(best_model_path)
-                        try:
-                            model.save_replay_buffer(best_model_replay_buffer_path)
-                        except AttributeError:
-                            pass
+                        if algo.lower() == 'dqn':
+                            try:
+                                model.save_replay_buffer(best_model_replay_buffer_path)
+                            except AttributeError:
+                                pass
                         best_policy_total_reward = new_policy_total_reward
                 else:
                     model.save(best_model_path)
