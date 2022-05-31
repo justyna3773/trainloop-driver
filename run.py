@@ -9,7 +9,7 @@ import os
 import os.path as osp
 import pandas as pd
 import re
-import requests
+# import requests
 import sys
 import time
 from collections import defaultdict
@@ -334,8 +334,9 @@ def configure_logger(log_path, **kwargs):
         logger.configure(**kwargs)
 
 
-def test_model(model, env, n_runs=3):
+def test_model(model, env, n_runs=6):
     episode_rewards = []
+    observations = []
     for i in range(n_runs):
         obs = env.reset()
         state = model.initial_state if hasattr(model, 'initial_state') else None
@@ -343,7 +344,6 @@ def test_model(model, env, n_runs=3):
         episode_reward = 0
         done = False
         while not done:
-            print(obs)
             if state is not None:
                 actions, _, state, _ = model.predict(obs, S=state, M=dones)
             else:
@@ -352,7 +352,9 @@ def test_model(model, env, n_runs=3):
             episode_reward += rew
             obs_arr = env.render(mode='array')
             obs_last = [serie[-1] for serie in obs_arr]
-            print(f'{obs_last} | rew: {rew} | ep_rew: {episode_reward}')
+            print(f'last obs {obs_last} | reward: {rew} | ep_reward: {episode_reward}')
+            print(f'mean obs {np.array(obs).mean(axis=1)}')
+            observations.append(obs)
 
         if isinstance(episode_reward, list):
             episode_reward = episode_reward[0]
@@ -361,23 +363,23 @@ def test_model(model, env, n_runs=3):
 
     mean_episode_reward = np.array(episode_rewards).mean()
     print(f'Mean reward after {n_runs} runs: {mean_episode_reward}')
-    return mean_episode_reward
+    return mean_episode_reward, observations
 
 
-def update_oracle_policy(model_save_path):
-    with open(model_save_path, 'rb') as updated_model:
-        updated_model_bytes = updated_model.read()
-        updated_model_encoded = base64.b64encode(updated_model_bytes)
-        updated_model_str = updated_model_encoded.decode('utf-8')
+# def update_oracle_policy(model_save_path):
+#     with open(model_save_path, 'rb') as updated_model:
+#         updated_model_bytes = updated_model.read()
+#         updated_model_encoded = base64.b64encode(updated_model_bytes)
+#         updated_model_str = updated_model_encoded.decode('utf-8')
 
-    req_payload = {
-        "content": updated_model_str,
-        "file_suffix": datetime.datetime.now().isoformat(),
-        "network_type": "lstm",
-    }
+#     req_payload = {
+#         "content": updated_model_str,
+#         "file_suffix": datetime.datetime.now().isoformat(),
+#         "network_type": "lstm",
+#     }
 
-    resp = requests.post(oracle_update_url, json=req_payload)
-    logger.log(f'Model updated ({resp.status_code}): {resp.text}')
+#     resp = requests.post(oracle_update_url, json=req_payload)
+#     logger.log(f'Model updated ({resp.status_code}): {resp.text}')
 
 
 def data_available(val):
@@ -490,11 +492,21 @@ def training_loop(args, extra_args):
             env = build_env(args, updated_extra_args)
             # if there is no new env it means there was no training data
             # thus there is no need to train and evaluate
+            print(stable_baselines3.__version__)
             if env is not None:
                 if previous_model_save_path:
-                    model = AlgoClass.load(path=previous_model_save_path,
-                                           env=env,
-                                           tensorboard_log=tensorboard_log)
+                    if algo == 'dqn':
+                        model = AlgoClass.load(path=previous_model_save_path,
+                                               env=env,
+                                               learning_rate=0.001,
+                                               buffer_size=2000,
+                                               learning_starts=300,
+                                               target_update_interval=500,
+                                               tensorboard_log=tensorboard_log)
+                    else:
+                        model = AlgoClass.load(path=previous_model_save_path,
+                                            env=env,
+                                            tensorboard_log=tensorboard_log)
                 else:
                     if args.initial_model:
                         logger.info(f'No model from previous iteration, using the '
@@ -504,7 +516,7 @@ def training_loop(args, extra_args):
                                                tensorboard_log=tensorboard_log)
                     else:
                         logger.info(f'No model from previous iteration and no initial model, creating '
-                                    f'new model: {args.initial_model}')
+                                    f'new model')
                         model = AlgoClass(policy=policy,
                                           env=env,
                                           tensorboard_log=tensorboard_log)
@@ -522,20 +534,23 @@ def training_loop(args, extra_args):
                 previous_model_save_path = model_save_path
 
                 logger.info(f'Test model after {iterations} iterations')
-                new_policy_total_reward = test_model(model, env)
+                new_policy_total_reward, observations = test_model(model, env)
                 rewards.append(new_policy_total_reward)
 
                 rewards_df = pd.DataFrame(rewards, columns=['reward'])
                 rewards_df.to_csv(f'/best_model/{algo.lower()}/{policy}/best_model_rewards.csv')
 
+                with open(f'/best_model/{algo.lower()}/{policy}/observations.npy', 'ab') as f:
+                    np.save(f, observations)
+
                 if iterations > 0:
                     if best_policy_total_reward is None:
                         best_model = AlgoClass.load(best_model_path)
-                        best_policy_total_reward = test_model(best_model, env)
+                        best_policy_total_reward, _ = test_model(best_model, env)
 
                     logger.info(f'Best policy reward: {best_policy_total_reward} '
                                 f'new policy reward: {new_policy_total_reward}')
-                    if new_policy_total_reward > best_policy_total_reward:
+                    if new_policy_total_reward >= best_policy_total_reward:
                         logger.info('New policy has a higher reward, updating the policy')
                         model.save(best_model_path)
                         try:

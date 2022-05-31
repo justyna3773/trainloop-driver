@@ -62,18 +62,18 @@ services:
               "--env", "ThreeSizeAppEnv-v1",
               "--simulator_speedup", "60", 
               "--save_path", "/output_models", 
-              "--mips_per_core", "3600", 
+              "--mips_per_core", "3600",
               "--seed", "1",
               "--mips_per_core", "4400",
               "--log_path", "/logs",
-              "--num_timesteps", "1000",    # 2x nsteps
+              "--num_timesteps", "500",    # 2x nsteps
               "--nsteps", "250",
               "--iteration_length_s", "10", # 10 for testing, 300 for normal run
               "--initial_timestamp", "0",
               "--initial_vm_count_no_data", "3",
-              "--observation_history_length", "30",
+              "--observation_history_length", "10", # 30 for CNN?
               "--policy", "CnnPolicy",
-              "--algo", "DQN",
+              "--algo", "PPO",
 #              "--initial_model", "/best_model/best_model",
               "--nminibatches", "1", # to stop recurrent networks for breaking
               "--continuous_mode"]
