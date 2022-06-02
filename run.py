@@ -424,6 +424,9 @@ def training_loop(args, extra_args):
     current_oracle_model = args.initial_model
     rewards = []
 
+    observation_history_length = int(args.observation_history_length)
+    all_observations = np.zeros((1, observation_history_length, 7))
+
     logger.log(f'Using {algo} with {policy}')
     logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
                f'data is gathered for simulation')
@@ -540,8 +543,10 @@ def training_loop(args, extra_args):
                 rewards_df = pd.DataFrame(rewards, columns=['reward'])
                 rewards_df.to_csv(f'/best_model/{algo.lower()}/{policy}/best_model_rewards.csv')
 
+                # all_observations.append(observations)
+                all_observations = np.append(all_observations, observations, axis=0)
                 with open(f'/best_model/{algo.lower()}/{policy}/observations.npy', 'ab') as f:
-                    np.save(f, observations)
+                    np.save(f, all_observations)
 
                 if iterations > 0:
                     if best_policy_total_reward is None:

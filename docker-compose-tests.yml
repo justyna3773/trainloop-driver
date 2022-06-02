@@ -68,11 +68,11 @@ services:
               "--log_path", "/logs",
               "--num_timesteps", "500",    # 2x nsteps
               "--nsteps", "250",
-              "--iteration_length_s", "10", # 10 for testing, 300 for normal run
+              "--iteration_length_s", "300", # 10 for testing, 300 for normal run
               "--initial_timestamp", "0",
               "--initial_vm_count_no_data", "3",
-              "--observation_history_length", "10", # 30 for CNN?
-              "--policy", "CnnPolicy",
+              "--observation_history_length", "1", # 30 for CNN?
+              "--policy", "MlpPolicy",
               "--algo", "PPO",
 #              "--initial_model", "/best_model/best_model",
               "--nminibatches", "1", # to stop recurrent networks for breaking
