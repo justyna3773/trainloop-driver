@@ -545,7 +545,7 @@ def training_loop(args, extra_args):
 
                 # all_observations.append(observations)
                 all_observations = np.append(all_observations, observations, axis=0)
-                with open(f'/best_model/{algo.lower()}/{policy}/observations.npy', 'ab') as f:
+                with open(f'/best_model/{algo.lower()}/{policy}/observations.npy', 'wb') as f:
                     np.save(f, all_observations)
 
                 if iterations > 0:
