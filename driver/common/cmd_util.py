@@ -202,7 +202,8 @@ def common_arg_parser():
     parser.add_argument('--initial_model', default=None, type=str)
     parser.add_argument('--initial_vm_count_no_data', default=None, type=int)
     parser.add_argument('--reindex_jobs', default=True, type=bool)
-    
+    parser.add_argument('--queue_wait_penalty', default=0.00001)
+
     return parser
 
 def robotics_arg_parser():

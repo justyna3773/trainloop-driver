@@ -213,6 +213,7 @@ def build_env(args, extra_args):
     seed = args.seed
     initial_vm_count = args.initial_vm_count
     simulator_speedup = args.simulator_speedup
+    queue_wait_penalty = args.queue_wait_penalty
 
     workload = get_workload(args, extra_args)
     if len(workload) == 0:
@@ -248,6 +249,7 @@ def build_env(args, extra_args):
         'simulation_speedup': str(simulator_speedup),
         'split_large_jobs': 'true',
         'vm_hourly_running_cost': s_vm_hourly_running_cost,
+        'queue_wait_penalty': queue_wait_penalty,
     }
 
     flatten_dict_observations = alg not in {'her'}
