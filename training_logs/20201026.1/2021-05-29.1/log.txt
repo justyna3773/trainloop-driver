@@ -1,3 +1,0 @@
-2021-05-29 16:17:15,389620: Logging to /logs/20201026.1/2021-05-29.1 in formats [<HumanOutputFormat(<stdout>)>, <HumanOutputFormat(/logs/20201026.1/2021-05-29.1/log.txt)>, <driver.logger.CSVOutputFormat object at 0x7f03b3432fd0>]
-2021-05-29 16:17:15,391334: Training once: starting...
-2021-05-29 16:17:15,392402: Loading workload from file: /input_workloads/TEST-DNNEVO-2.swf

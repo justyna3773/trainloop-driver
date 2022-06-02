@@ -234,6 +234,7 @@ def build_env(args, extra_args):
     seed = args.seed
     initial_vm_count = args.initial_vm_count
     simulator_speedup = args.simulator_speedup
+    queue_wait_penalty = args.queue_wait_penalty
 
     workload = get_workload(args, extra_args)
     if len(workload) == 0:
@@ -270,16 +271,16 @@ def build_env(args, extra_args):
         'simulation_speedup': str(simulator_speedup),
         'split_large_jobs': 'true',
         'vm_hourly_running_cost': s_vm_hourly_running_cost,
-        'observation_history_length': args.observation_history_length
+        'observation_history_length': args.observation_history_length,
+        'queue_wait_penalty': str(queue_wait_penalty)
     }
 
     logger.info(args)
     env = make_vec_env(env_id=env_id,
                        n_envs=args.num_env or 1,
-                       # seed=seed,
+                    #    seed=seed,
                        env_kwargs=env_kwargs,
                        )
-
     return env
 
 
@@ -499,13 +500,16 @@ def training_loop(args, extra_args):
             if env is not None:
                 if previous_model_save_path:
                     if algo == 'dqn':
+                        # model = AlgoClass.load(path=previous_model_save_path,
+                        #                        env=env,
+                        #                        learning_rate=0.001,
+                        #                        buffer_size=2000,
+                        #                        learning_starts=300,
+                        #                        target_update_interval=500,
+                        #                        tensorboard_log=tensorboard_log)
                         model = AlgoClass.load(path=previous_model_save_path,
-                                               env=env,
-                                               learning_rate=0.001,
-                                               buffer_size=2000,
-                                               learning_starts=300,
-                                               target_update_interval=500,
-                                               tensorboard_log=tensorboard_log)
+                                            env=env,
+                                            tensorboard_log=tensorboard_log)
                     else:
                         model = AlgoClass.load(path=previous_model_save_path,
                                             env=env,
@@ -537,6 +541,9 @@ def training_loop(args, extra_args):
                 previous_model_save_path = model_save_path
 
                 logger.info(f'Test model after {iterations} iterations')
+                env.reset()
+                args.num_env = 1
+                env = build_env(args, updated_extra_args)
                 new_policy_total_reward, observations = test_model(model, env)
                 rewards.append(new_policy_total_reward)
 
