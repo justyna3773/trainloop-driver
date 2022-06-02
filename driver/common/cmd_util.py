@@ -202,15 +202,10 @@ def common_arg_parser():
     parser.add_argument('--initial_model', default=None, type=str)
     parser.add_argument('--initial_vm_count_no_data', default=None, type=int)
     parser.add_argument('--reindex_jobs', default=True, type=bool)
-<<<<<<< HEAD
     parser.add_argument('--algo', help='Algorithm', type=str, default='DQN')
     parser.add_argument('--policy', help='Algorithm', type=str, default='MlpPolicy')
     parser.add_argument('--observation_history_length', help='observation_history_length', type=str, default='1')
-    
-=======
     parser.add_argument('--queue_wait_penalty', default=0.00001)
-
->>>>>>> master_new
     return parser
 
 def robotics_arg_parser():

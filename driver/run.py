@@ -271,11 +271,8 @@ def build_env(args, extra_args):
         'simulation_speedup': str(simulator_speedup),
         'split_large_jobs': 'true',
         'vm_hourly_running_cost': s_vm_hourly_running_cost,
-<<<<<<< HEAD
-        'observation_history_length': args.observation_history_length
-=======
+        'observation_history_length': args.observation_history_length,
         'queue_wait_penalty': queue_wait_penalty,
->>>>>>> master_new
     }
 
     logger.info(args)
