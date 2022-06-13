@@ -15,6 +15,7 @@ import time
 from collections import defaultdict
 from importlib import import_module
 import stable_baselines3
+import sb3_contrib
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecEnv
 
@@ -408,7 +409,16 @@ def training_loop(args, extra_args):
     env = None
     algo = args.algo
     policy = args.policy
-    AlgoClass = getattr(stable_baselines3, algo)
+    n_steps = int(args.n_steps)
+    try:
+        AlgoClass = getattr(stable_baselines3, algo)
+    except:
+        AlgoClass = getattr(sb3_contrib, algo)
+
+    # if policy != 'RecurrentPPO':
+    #     AlgoClass = getattr(stable_baselines3, algo)
+    # else:
+    #     AlgoClass = getattr(sb3_contrib, algo)
 
     algo_tag = f"{algo.lower()}/{policy}"
     base_save_path = os.path.join(base_save_path, algo_tag)
@@ -426,7 +436,10 @@ def training_loop(args, extra_args):
     rewards = []
 
     observation_history_length = int(args.observation_history_length)
-    all_observations = np.zeros((1, observation_history_length, 7))
+    if policy == 'CnnPolicy':
+        all_observations = np.zeros((1, 1, 1, observation_history_length, 7))
+    else:
+        all_observations = np.zeros((1, observation_history_length, 7))
 
     logger.log(f'Using {algo} with {policy}')
     logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
@@ -499,21 +512,23 @@ def training_loop(args, extra_args):
             print(stable_baselines3.__version__)
             if env is not None:
                 if previous_model_save_path:
-                    if algo == 'dqn':
+                    if algo == 'DQN':
                         # model = AlgoClass.load(path=previous_model_save_path,
                         #                        env=env,
-                        #                        learning_rate=0.001,
-                        #                        buffer_size=2000,
+                        #                        learning_rate=0.0001,
+                        #                        exploration_fraction=0.5,
+                        #                        batch_size=64,
+                        #                        buffer_size=10000,
                         #                        learning_starts=300,
-                        #                        target_update_interval=500,
+                        #                        target_update_interval=200,
                         #                        tensorboard_log=tensorboard_log)
                         model = AlgoClass.load(path=previous_model_save_path,
-                                            env=env,
-                                            tensorboard_log=tensorboard_log)
+                                                env=env,
+                                                tensorboard_log=tensorboard_log)
                     else:
                         model = AlgoClass.load(path=previous_model_save_path,
-                                            env=env,
-                                            tensorboard_log=tensorboard_log)
+                                                env=env,
+                                                tensorboard_log=tensorboard_log)
                 else:
                     if args.initial_model:
                         logger.info(f'No model from previous iteration, using the '
@@ -524,9 +539,24 @@ def training_loop(args, extra_args):
                     else:
                         logger.info(f'No model from previous iteration and no initial model, creating '
                                     f'new model')
-                        model = AlgoClass(policy=policy,
-                                          env=env,
-                                          tensorboard_log=tensorboard_log)
+                        if algo == 'DQN':
+                            model = AlgoClass(policy=policy,
+                                                env=env,
+                                                learning_rate=0.0001,
+                                                exploration_fraction=0.5,
+                                                batch_size=64,
+                                                buffer_size=20000,
+                                                learning_starts=1000,
+                                                target_update_interval=200,
+                                                tensorboard_log=tensorboard_log)
+                            # model = AlgoClass(policy=policy,
+                            #                         env=env,
+                            #                         tensorboard_log=tensorboard_log)
+                        else:
+                            model = AlgoClass(policy=policy,
+                                              env=env,
+                                              n_steps=n_steps,
+                                              tensorboard_log=tensorboard_log)
 
                 logger.info('New environment built...')
                 model = train(args,
@@ -536,14 +566,17 @@ def training_loop(args, extra_args):
 
                 model_save_path = f'{base_save_path}_{iterations}.zip'
                 model.save(model_save_path)
+                model.save(best_model_path)
                 # model_replay_buffer_save_path = f'{base_save_path}_{iterations}_rb/'
                 # model.save_replay_buffer(model_replay_buffer_save_path)
                 previous_model_save_path = model_save_path
 
                 logger.info(f'Test model after {iterations} iterations')
                 env.reset()
+                num_env = args.num_env
                 args.num_env = 1
                 env = build_env(args, updated_extra_args)
+                args.num_env = num_env
                 new_policy_total_reward, observations = test_model(model, env)
                 rewards.append(new_policy_total_reward)
 
@@ -563,15 +596,9 @@ def training_loop(args, extra_args):
                     logger.info(f'Best policy reward: {best_policy_total_reward} '
                                 f'new policy reward: {new_policy_total_reward}')
                     if new_policy_total_reward >= best_policy_total_reward:
-                        logger.info('New policy has a higher reward, updating the policy')
-                        model.save(best_model_path)
-                        try:
-                            model.save_replay_buffer(best_model_replay_buffer_path)
-                        except AttributeError:
-                            pass
+                        logger.info('New policy has a higher reward')
+                        # model.save(best_model_path)
                         best_policy_total_reward = new_policy_total_reward
-                else:
-                    model.save(best_model_path)
             else:
                 logger.info('The environment has not changed, training and '
                             'evaluation skipped')

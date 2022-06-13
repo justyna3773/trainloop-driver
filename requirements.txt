@@ -1,5 +1,7 @@
 git+https://github.com/andrzejmalota/stable-baselines3@custom_cnn_env#egg=stable-baselines3
 
+git+https://github.com/andrzejmalota/stable-baselines3-contrib@custom_cnn_layer#egg=sb3-contrib
+
 # git+https://github.com/pkoperek/gym_cloudsimplus#egg=gym_cloudsimplus
 git+https://github.com/andrzejmalota/gym_cloudsimplus@pytorch_cnn#egg=gym_cloudsimplus
 

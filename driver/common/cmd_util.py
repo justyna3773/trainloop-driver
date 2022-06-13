@@ -206,6 +206,7 @@ def common_arg_parser():
     parser.add_argument('--policy', help='Algorithm', type=str, default='MlpPolicy')
     parser.add_argument('--observation_history_length', help='observation_history_length', type=str, default='1')
     parser.add_argument('--queue_wait_penalty', type=float, default=0.00001)
+    parser.add_argument('--n_steps', type=int, default=2048)
     return parser
 
 def robotics_arg_parser():

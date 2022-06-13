@@ -60,21 +60,22 @@ services:
     # Parameters from 10MM
     command: ["trainloop",
               "--env", "ThreeSizeAppEnv-v1",
-              "--num_env", "6",
+              "--num_env", "4",
               "--simulator_speedup", "60", 
+              "--queue_wait_penalty", "0.00001", # 0.00001
               "--save_path", "/output_models", 
               "--mips_per_core", "3600",
               "--seed", "1",
               "--mips_per_core", "4400",
               "--log_path", "/logs",
-              "--num_timesteps", "500",    # 2x nsteps
-              "--nsteps", "250",
+              "--num_timesteps", "10",    # 2x nsteps
+              "--n_steps", "2048",
               "--iteration_length_s", "10", # 10 for testing, 300 for normal run
               "--initial_timestamp", "0",
               "--initial_vm_count_no_data", "3",
-              "--observation_history_length", "1", # 30 for CNN?
-              "--policy", "CnnPolicy",
-              "--algo", "DQN",
+              "--observation_history_length", "10", # 30 for CNN?
+              "--policy", "CnnLstmPolicy", # MlpLstmPolicy, MlpPolicy, CnnPolicy
+              "--algo", "RecurrentPPO", # DQN, PPO, RecurrentPPO
 #              "--initial_model", "/best_model/best_model",
               "--nminibatches", "1", # to stop recurrent networks from breaking
               "--continuous_mode"]
