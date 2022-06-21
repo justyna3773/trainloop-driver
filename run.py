@@ -28,8 +28,11 @@ from driver.common.db import (
     get_cores_count_at,
     get_jobs_between,
     init_dbs,
+    get_all_cores_count_at
 )
 from driver.common.swf_jobs import get_jobs_from_file
+from driver.baseline_models import RandomModel, SimpleCPUThresholdModel
+
 
 submitted_jobs_cnt: int = 0
 oracle_update_url: str = os.getenv("ORACLE_UPDATE_URL",
@@ -249,11 +252,6 @@ def build_env(args, extra_args):
 
     env_type, env_id = get_env_type(args)
     logger.info(f'Env type: {env_type}, env id: {env_id}')
-    # config = tf.ConfigProto(allow_soft_placement=True,
-    #                         intra_op_parallelism_threads=1,
-    #                         inter_op_parallelism_threads=1)
-    # config.gpu_options.allow_growth = True
-    # get_session(config=config, force_recreate=True)
 
     initial_s_vm_count = extra_args.get('initial_s_vm_count', initial_vm_count)
     initial_m_vm_count = extra_args.get('initial_m_vm_count', initial_vm_count)
@@ -338,12 +336,19 @@ def configure_logger(log_path, **kwargs):
 
 def test_model(model, env, n_runs=6):
     episode_rewards = []
+    episode_rewards_per_run = []
     observations = []
+    observations_evalute_results = []
+    episode_lenghts = []
+    cores_count = []
     for i in range(n_runs):
+        episode_len = 0
         obs = env.reset()
         state = model.initial_state if hasattr(model, 'initial_state') else None
         dones = np.zeros((1,))
         episode_reward = 0
+        rewards_run = []
+        observations_run = []
         done = False
         while not done:
             if state is not None:
@@ -351,21 +356,28 @@ def test_model(model, env, n_runs=6):
             else:
                 actions, _states = model.predict(obs)
             obs, rew, done, _ = env.step(actions)
-            episode_reward += rew
+            reward = rew[0]
+            episode_reward += reward
             obs_arr = env.render(mode='array')
             obs_last = [serie[-1] for serie in obs_arr]
             print(f'last obs {obs_last} | reward: {rew} | ep_reward: {episode_reward}')
             print(f'mean obs {np.array(obs).mean(axis=1)}')
+            observations_run.append(obs)
             observations.append(obs)
+            rewards_run.append(reward)
+            episode_len += 1
 
         if isinstance(episode_reward, list):
-            episode_reward = episode_reward[0]
+            episode_reward = episode_reward.sum()
+        episode_rewards_per_run.append(episode_reward)
+        episode_lenghts.append(episode_len)
+        episode_rewards.append(np.array(rewards_run))
+        observations_evalute_results.append(np.array(observations_run))
 
-        episode_rewards.append(episode_reward)
-
-    mean_episode_reward = np.array(episode_rewards).mean()
+    # print(episode_rewards)
+    mean_episode_reward = np.array(episode_rewards_per_run).mean()
     print(f'Mean reward after {n_runs} runs: {mean_episode_reward}')
-    return mean_episode_reward, observations
+    return mean_episode_reward, observations, np.array(episode_lenghts), np.array(episode_rewards), np.array(episode_rewards_per_run), np.array(observations_evalute_results)
 
 
 # def update_oracle_policy(model_save_path):
@@ -434,9 +446,10 @@ def training_loop(args, extra_args):
     tensorboard_log = f"/output_models/{algo.lower()}/{policy}/"
     current_oracle_model = args.initial_model
     rewards = []
+    mean_episode_lenghts = []
 
     observation_history_length = int(args.observation_history_length)
-    if policy == 'CnnPolicy':
+    if 'Cnn' in policy:
         all_observations = np.zeros((1, 1, 1, observation_history_length, 7))
     else:
         all_observations = np.zeros((1, observation_history_length, 7))
@@ -577,11 +590,14 @@ def training_loop(args, extra_args):
                 args.num_env = 1
                 env = build_env(args, updated_extra_args)
                 args.num_env = num_env
-                new_policy_total_reward, observations = test_model(model, env)
+                new_policy_total_reward, observations, episode_lenghts, _, _, _ = test_model(model, env)
                 rewards.append(new_policy_total_reward)
+                mean_episode_lenghts.append(episode_lenghts.mean())
 
-                rewards_df = pd.DataFrame(rewards, columns=['reward'])
-                rewards_df.to_csv(f'/best_model/{algo.lower()}/{policy}/best_model_rewards.csv')
+                df = pd.DataFrame()
+                df['reward'] = rewards
+                df['episode_len'] = mean_episode_lenghts
+                df.to_csv(f'/best_model/{algo.lower()}/{policy}/training_data.csv')
 
                 # all_observations.append(observations)
                 all_observations = np.append(all_observations, observations, axis=0)
@@ -591,7 +607,7 @@ def training_loop(args, extra_args):
                 if iterations > 0:
                     if best_policy_total_reward is None:
                         best_model = AlgoClass.load(best_model_path)
-                        best_policy_total_reward, _ = test_model(best_model, env)
+                        best_policy_total_reward, _, _, _, _, _ = test_model(best_model, env)
 
                     logger.info(f'Best policy reward: {best_policy_total_reward} '
                                 f'new policy reward: {new_policy_total_reward}')
@@ -633,11 +649,136 @@ def training_once(args, extra_args):
 
     if args.play:
         logger.log("Running trained model")
-        test_model(model, env)
+        _, _, _, _, _, _ = test_model(model, env)
 
     env.close()
     logger.log('Training once: ended')
 
+
+def evaluate(args, extra_args):
+    logger.log('Initializing databases')
+    init_dbs()
+    logger.log('Initialized databases')
+    iteration_length_s = args.iteration_length_s
+    # global training start
+    global_start = time.time()
+    initial_timestamp = global_start if args.initial_timestamp < 0 else args.initial_timestamp
+    prev_tstamp_for_db = None
+
+    logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
+               f'data is gathered for simulation')
+    time.sleep(iteration_length_s)
+    logger.log('Evaluation loop: entering...')
+
+    iteration_start = time.time()
+
+    # how much time had passed since the start of the training
+    iteration_delta = iteration_start - global_start
+
+    current_tstamp_for_db = initial_timestamp + iteration_delta
+
+    training_data_end = current_tstamp_for_db
+
+    if prev_tstamp_for_db:
+        training_data_start = prev_tstamp_for_db
+    else:
+        training_data_start = current_tstamp_for_db - iteration_length_s
+
+    # this needs to happen after training_data_start, when we determine
+    # the start of the data we need to have the value from the previous
+    # iteration
+    prev_tstamp_for_db = current_tstamp_for_db
+
+    updated_extra_args = {
+        'iteration_start': iteration_start,
+        'training_data_start': training_data_start,
+        'training_data_end': training_data_end,
+    }
+    updated_extra_args.update(extra_args)
+
+    cores_count = get_cores_count_at(training_data_start)
+
+    logger.log(f'Using training data starting at: '
+                f'{training_data_start}-{training_data_end} '
+                f'Initial tstamp: {initial_timestamp}')
+
+    if any([not data_available(v) for k, v in cores_count.items()]):
+        initial_vm_cnt = args.initial_vm_count_no_data
+        if initial_vm_cnt:
+            logger.log(f'Cannot retrieve vm counts from db: {cores_count}. '
+                        f'Overwriting with initial_vm_count_no_data: '
+                        f'{initial_vm_cnt}'
+                        )
+
+            cores_count = {
+                's_cores': initial_vm_cnt,
+                'm_cores': initial_vm_cnt,
+                'l_cores': initial_vm_cnt,
+            }
+
+    if all([data_available(v) for k, v in cores_count.items()]):
+        logger.log(f'Initial cores: {cores_count}')
+
+        updated_extra_args.update({
+            'initial_s_vm_count': math.floor(cores_count['s_cores'] / 2),
+            'initial_m_vm_count': math.floor(cores_count['m_cores'] / 2),
+            'initial_l_vm_count': math.floor(cores_count['l_cores'] / 2),
+        })
+        env = build_env(args, updated_extra_args)
+
+        models = {
+            'RandomModel': [RandomModel(action_space=env.action_space)],
+            'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
+            'DQN': {'MlpPolicy', 'CnnPolicy'},
+            'PPO': {'MlpPolicy', 'CnnPolicy'},
+            'RecurrentPPO': {'MlpLstmPolicy', 'CnnLstmPolicy'},
+        }
+        baseline_models_list = ['RandomModel']
+        evaluation_results = pd.DataFrame([])
+        for algo, policies in models.items():
+            if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
+                try:
+                    AlgoClass = getattr(stable_baselines3, algo)
+                except:
+                    AlgoClass = getattr(sb3_contrib, algo)
+            for policy in policies:
+                if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
+                    X = np.load(f'/best_model/{algo.lower()}/{policy}/observations.npy')
+                    args.observation_history_length = f'{X.shape[-2]}'
+                else:
+                    args.observation_history_length = '1'
+                env = build_env(args, updated_extra_args)
+                if env is not None:
+                    logger.log(f'Loading best {algo} model, with {policy}')
+                    if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
+                        model = AlgoClass.load(path=f'/best_model/{algo.lower()}/{policy}/best_model.zip',
+                                            env=env)
+                    else:
+                        model = policy
+                    logger.log('Evaluating...')
+                    logger.log(env.reset())
+                    mean_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results  = test_model(model, env, n_runs=10)
+                    
+                    
+                    # evaluation_results[f'observations_{algo.lower()}_{policy}'] = observations_evalute_results
+                    # evaluation_results[f'rewards_{algo.lower()}_{policy}'] = rewards
+                    if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
+                        evaluation_results[f'rewards_per_run_{algo}_{policy}'] = rewards_per_run
+                        evaluation_results[f'episode_lenghts_{algo}_{policy}'] = episode_lenghts
+                    else:
+                        evaluation_results[f'rewards_per_run_{policy}'] = rewards_per_run
+                        evaluation_results[f'episode_lenghts_{policy}'] = episode_lenghts
+
+                    with open(f'/best_model/observations/observations_{args.observation_history_length}.npy', 'wb') as f:
+                                np.save(f, observations_evalute_results)
+
+                    with open(f'/best_model/rewards/rewards_{algo.lower()}_{policy}.npy', 'wb') as f:
+                        np.save(f, observations_evalute_results)
+
+        evaluation_results.to_csv(f'/best_model/evaluation_results.csv')
+
+def save_workload(args, extra_args):
+    pass
 
 def main():
     args = sys.argv
@@ -646,11 +787,18 @@ def main():
     configure_logger(args.log_path, format_strs=['stdout', 'log', 'csv'])
     extra_args = parse_cmdline_kwargs(unknown_args)
 
+    if args.evaluate_mode:
+        evaluate(args, extra_args)
+        return
     if args.continuous_mode:
         training_loop(args, extra_args)
+        return
     else:
         training_once(args, extra_args)
+    if args.save_workload_mode:
+        save_workload(args, extra_args)
+        return
 
-
+    sys.exit(0)
 if __name__ == '__main__':
     main()

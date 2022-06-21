@@ -265,6 +265,13 @@ def get_cores_count_at(timestamp):
         'l_cores': l_cores,
     }
 
+def get_all_cores_count_at(timestamp):
+    s_cores = _get_metric_value_at('coresUsedCountS', timestamp)
+    m_cores = _get_metric_value_at('coresUsedCountM', timestamp)
+    l_cores = _get_metric_value_at('coresUsedCountL', timestamp)
+
+    return s_cores + m_cores + l_cores
+
 
 if __name__ == '__main__':
     init_dbs()
