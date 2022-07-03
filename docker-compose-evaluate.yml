@@ -57,7 +57,7 @@ services:
               "--log_path", "/logs",
               # "--lr", "0.0003",
               # "--network", "lstm",
-              "--iteration_length_s", "600",  # 15 minutes per iteration # 900 #1800
+              "--iteration_length_s", "900",  # 15 minutes per iteration # 900 #1800
               "--initial_timestamp", "30",
               "--initial_vm_count_no_data", "3",
               "--observation_history_length", "1", # 30 for CNN?

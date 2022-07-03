@@ -1,4 +1,4 @@
-import base64
+import os
 import datetime
 import gym
 import gym_cloudsimplus
@@ -142,14 +142,6 @@ def train(args,
     logger.info(model)
     with ProgressBarManager(total_timesteps) as pbar_callback:
         model.learn(total_timesteps, callback=pbar_callback)
-    # learn = get_learn_function(args.alg)
-    # model = learn(
-    #     env=env,
-    #     seed=seed,
-    #     total_timesteps=total_timesteps,
-    #     **alg_kwargs
-    # )
-
     return model
 
 
@@ -395,6 +387,31 @@ def test_model(model, env, n_runs=6):
 #     resp = requests.post(oracle_update_url, json=req_payload)
 #     logger.log(f'Model updated ({resp.status_code}): {resp.text}')
 
+def build_dqn_model(AlgoClass, policy, tensorboard_log, env):
+    return AlgoClass(policy=policy,
+                     env=env,
+                    #  learning_rate=0.0001,
+                     exploration_fraction=0.15,
+                    #  batch_size=64,
+                    #  buffer_size=10000,
+                    #  learning_starts=1000,
+                    #  target_update_interval=500,
+                     verbose=1,
+                     tensorboard_log=tensorboard_log)
+
+def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps):
+    return AlgoClass(policy=policy,
+                     env=env,
+                     n_steps=n_steps,
+                     learning_rate=0.00003,
+                     vf_coef=1,
+                     clip_range_vf=10.0,
+                     max_grad_norm=1,
+                     gamma=0.95,
+                     ent_coef=0.001,
+                     clip_range=0.05,
+                     verbose=1,
+                     tensorboard_log=tensorboard_log)
 
 def data_available(val):
     if val is not None:
@@ -427,17 +444,12 @@ def training_loop(args, extra_args):
     except:
         AlgoClass = getattr(sb3_contrib, algo)
 
-    # if policy != 'RecurrentPPO':
-    #     AlgoClass = getattr(stable_baselines3, algo)
-    # else:
-    #     AlgoClass = getattr(sb3_contrib, algo)
-
     algo_tag = f"{algo.lower()}/{policy}"
     base_save_path = os.path.join(base_save_path, algo_tag)
     date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
     base_save_path = os.path.join(base_save_path, date_tag)
 
-    best_model_path = f'/best_model/{algo.lower()}/{policy}/best_model/'
+    best_model_path = f'/best_model/{algo.lower()}/{policy}/{algo.lower()}_{policy}'
     best_model_replay_buffer_path = f'/best_model/{algo.lower()}/{policy}/best_model_rb/'
 
     best_policy_total_reward = None
@@ -448,11 +460,12 @@ def training_loop(args, extra_args):
     rewards = []
     mean_episode_lenghts = []
 
-    observation_history_length = int(args.observation_history_length)
     if 'Cnn' in policy:
-        all_observations = np.zeros((1, 1, 1, observation_history_length, 7))
+        args.observation_history_length = 15
+        all_observations = np.zeros((1, 1, 1, args.observation_history_length, 7))
     else:
-        all_observations = np.zeros((1, observation_history_length, 7))
+        args.observation_history_length = 1
+        all_observations = np.zeros((1, args.observation_history_length, 7))
 
     logger.log(f'Using {algo} with {policy}')
     logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
@@ -522,19 +535,10 @@ def training_loop(args, extra_args):
             env = build_env(args, updated_extra_args)
             # if there is no new env it means there was no training data
             # thus there is no need to train and evaluate
-            print(stable_baselines3.__version__)
+            
             if env is not None:
                 if previous_model_save_path:
                     if algo == 'DQN':
-                        # model = AlgoClass.load(path=previous_model_save_path,
-                        #                        env=env,
-                        #                        learning_rate=0.0001,
-                        #                        exploration_fraction=0.5,
-                        #                        batch_size=64,
-                        #                        buffer_size=10000,
-                        #                        learning_starts=300,
-                        #                        target_update_interval=200,
-                        #                        tensorboard_log=tensorboard_log)
                         model = AlgoClass.load(path=previous_model_save_path,
                                                 env=env,
                                                 tensorboard_log=tensorboard_log)
@@ -545,31 +549,18 @@ def training_loop(args, extra_args):
                 else:
                     if args.initial_model:
                         logger.info(f'No model from previous iteration, using the '
-                                    f'initial one: {args.initial_model}')
-                        model = AlgoClass.load(path=args.initial_model,
+                                    f'initial one')
+                        print(os.getcwd())
+                        model = AlgoClass.load(path=f'/initial_model/{algo.lower()}/{policy}/{algo.lower()}_{policy}',
                                                env=env,
                                                tensorboard_log=tensorboard_log)
                     else:
                         logger.info(f'No model from previous iteration and no initial model, creating '
                                     f'new model')
                         if algo == 'DQN':
-                            model = AlgoClass(policy=policy,
-                                                env=env,
-                                                learning_rate=0.0001,
-                                                exploration_fraction=0.3,
-                                                batch_size=64,
-                                                buffer_size=50000,
-                                                learning_starts=2000,
-                                                target_update_interval=2000,
-                                                tensorboard_log=tensorboard_log)
-                            # model = AlgoClass(policy=policy,
-                            #                         env=env,
-                            #                         tensorboard_log=tensorboard_log)
+                            model = build_dqn_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log)
                         else:
-                            model = AlgoClass(policy=policy,
-                                              env=env,
-                                              n_steps=n_steps,
-                                              tensorboard_log=tensorboard_log)
+                            model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps)
 
                 logger.info('New environment built...')
                 model = train(args,
@@ -640,16 +631,67 @@ def training_loop(args, extra_args):
 
 def training_once(args, extra_args):
     logger.log('Training once: starting...')
+    
+    algo = args.algo
+    policy = args.policy
+    tensorboard_log = f"/output_models_initial/{algo.lower()}/{policy}/"
+    n_steps = int(args.n_steps)
+    try:
+        AlgoClass = getattr(stable_baselines3, algo)
+    except:
+        AlgoClass = getattr(sb3_contrib, algo)
+
+    # algo_tag = f"{algo.lower()}/{policy}"
+    # base_save_path = os.path.join(base_save_path, algo_tag)
+    # date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
+    # base_save_path = os.path.join(base_save_path, date_tag)
+
+    if 'Cnn' in policy:
+        args.observation_history_length = 15
+        all_observations = np.zeros((1, 1, 1, args.observation_history_length, 7))
+    else:
+        args.observation_history_length = 1
+        all_observations = np.zeros((1, args.observation_history_length, 7))
+
+    initial_model_path = f'/initial_model/{algo.lower()}/{policy}/{algo.lower()}_{policy}'
+
+    # build env
     env = build_env(args, extra_args)
-    model = train(args, extra_args, env)
 
-    if args.save_path is not None:
-        save_path = osp.expanduser(args.save_path)
-        model.save(save_path)
+    # build model
+    if algo == 'DQN':
+        model = build_dqn_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log)
+    else:
+        model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps)
 
-    if args.play:
-        logger.log("Running trained model")
-        _, _, _, _, _, _ = test_model(model, env)
+
+    # train the model
+    if env:
+        logger.info('New environment built...')
+        model = train(args,
+                      model,
+                      extra_args,
+                      env)
+
+        model.save(initial_model_path)
+
+        logger.info(f'Test the model')
+        env.reset()
+        num_env = args.num_env
+        args.num_env = 1
+        env = build_env(args, extra_args)
+        args.num_env = num_env
+        new_policy_total_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results = test_model(model, env, n_runs=10)
+
+        print(rewards.shape)
+        df = pd.DataFrame()
+        df['reward'] = rewards_per_run
+        df['episode_len'] = episode_lenghts
+        df.to_csv(f'/initial_model/{algo.lower()}/{policy}/training_data.csv')
+
+        all_observations = np.append(all_observations, observations, axis=0)
+        with open(f'/initial_model/{algo.lower()}/{policy}/observations.npy', 'wb') as f:
+            np.save(f, all_observations)
 
     env.close()
     logger.log('Training once: ended')
@@ -751,7 +793,10 @@ def evaluate(args, extra_args):
                 if env is not None:
                     logger.log(f'Loading best {algo} model, with {policy}')
                     if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
-                        model = AlgoClass.load(path=f'/best_model/{algo.lower()}/{policy}/best_model.zip',
+                        # model = AlgoClass.load(path=f'/best_model/{algo.lower()}/{policy}/best_model.zip',
+                        #                     env=env)
+
+                        model = AlgoClass.load(path=f'/best_model/best_models/{algo.lower()}_{policy}.zip',
                                             env=env)
                     else:
                         model = policy
@@ -759,9 +804,6 @@ def evaluate(args, extra_args):
                     logger.log(env.reset())
                     mean_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results  = test_model(model, env, n_runs=10)
                     
-                    
-                    # evaluation_results[f'observations_{algo.lower()}_{policy}'] = observations_evalute_results
-                    # evaluation_results[f'rewards_{algo.lower()}_{policy}'] = rewards
                     if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
                         evaluation_results[f'rewards_per_run_{algo}_{policy}'] = rewards_per_run
                         evaluation_results[f'episode_lenghts_{algo}_{policy}'] = episode_lenghts
@@ -776,6 +818,9 @@ def evaluate(args, extra_args):
                         np.save(f, observations_evalute_results)
 
         evaluation_results.to_csv(f'/best_model/evaluation_results.csv')
+
+    env.close()
+    logger.log('Evaluation ended')
 
 def save_workload(args, extra_args):
     pass
@@ -795,8 +840,8 @@ def main():
         return
     else:
         training_once(args, extra_args)
-    if args.save_workload_mode:
-        save_workload(args, extra_args)
+    # if args.save_workload_mode:
+    #     save_workload(args, extra_args)
         return
 
     sys.exit(0)

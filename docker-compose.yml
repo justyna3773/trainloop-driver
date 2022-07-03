@@ -45,31 +45,30 @@ services:
       - CLOUDSIM_GATEWAY_HOST=simulator
       - CLOUDSIM_GATEWAY_PORT=25333
     # Parameters from 10MM
-    command: ["trainloop", 
+    command: ["trainloop",
               "--env", "ThreeSizeAppEnv-v1",
-              "--num_env", "1",
+              "--num_env", "6",
               "--simulator_speedup", "60",
-              "--queue_wait_penalty", "0.0001", # 0.00001
+              "--queue_wait_penalty", "0.0005", # 0.00001
               "--save_path", "/output_models", 
               "--mips_per_core", "3600", 
               "--seed", "1",
               "--mips_per_core", "4400",
               "--log_path", "/logs",
-              "--vf_coef", "0.0005",
-              "--lam", "0.97",
-              "--gamma", "0.99",
-              "--cliprange", "0.2",
-              "--num_timesteps", "10000",  #25000 #10000  # this needs to be adjusted to the amount of data fetched from the db; 500k should be enough to train from fresh, but not too long in wall clock time
+              # "--vf_coef", "0.0005",
+              # "--lam", "0.97",
+              # "--gamma", "0.99",
+              # "--cliprange", "0.2",
+              "--num_timesteps", "12",  #25000 #10000  # this needs to be adjusted to the amount of data fetched from the db; 500k should be enough to train from fresh, but not too long in wall clock time
               "--n_steps", "256",  # 2048
               # "--lr", "0.0003",
               # "--network", "lstm",
-              "--iteration_length_s", "1200",  # 15 minutes per iteration # 900 #1800
+              "--iteration_length_s", "11",  # 15 minutes per iteration # 900 #1800
               "--initial_timestamp", "0",
               "--initial_vm_count_no_data", "3",
-              "--observation_history_length", "15", # 30 for CNN?
-              "--policy", "CnnLstmPolicy", # MlpLstmPolicy, CnnLstmPolicy, MlpPolicy, CnnPolicy
-              "--algo", "RecurrentPPO", # DQN, PPO, RecurrentPPO
-#              "--initial_model", "/best_model/best_model",
+              "--policy", "MlpPolicy", # MlpLstmPolicy, CnnLstmPolicy, MlpPolicy, CnnPolicy
+              "--algo", "DQN", # DQN, PPO, RecurrentPPO
+             "--initial_model", "True",
               "--nminibatches", "1", # to stop recurrent networks from breaking
               "--continuous_mode"]
     depends_on:
@@ -79,5 +78,6 @@ services:
     volumes:
       - "./output_models:/output_models"
       - "./best_model:/best_model"
+      - "./initial_model:/initial_model"
       - "./input_workloads:/input_workloads"
       - "./logs:/logs"

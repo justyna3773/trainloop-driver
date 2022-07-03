@@ -6,10 +6,10 @@ services:
       - HOST_PE_MIPS=4400
       - MAX_VMS_PER_SIZE=10
       - PRINT_JOBS_PERIODICALLY=false
-    image: pkoperek/cloudsimplus-gateway:1.8.0
+    image: pkoperek/cloudsimplus-gateway:1.8.2
 
-  driver:
-    image: pkoperek/trainloop-driver:1.0
+  driver_train_sample:
+    build: .
     environment:
       - CLOUDSIM_GATEWAY_HOST=simulator
       - CLOUDSIM_GATEWAY_PORT=25333
@@ -18,35 +18,25 @@ services:
     command: [
             "trainloop",
             "--simulator_speedup", "60",
-            "--save_path", "/output_model/20201026_1_model.bin",
+            "--num_env", "6",  # 6
             "--mips_per_core", "4400",
             "--workload_file", "/input_workloads/TEST-DNNEVO-2.swf",
-            "--env", "ThreeSizeAppEnv-v0",
+            "--env", "ThreeSizeAppEnv-v1",
             "--log_path", "/logs/20201026.1",
-            "--vf_coef", "1",
-            "--lam", "0.99",
-            "--gamma", "0.95",
-            "--ent_coef", "0.001",
-            "--cliprange", "0.05",
-            "--num_timesteps", "2000000",
-            "--nsteps", "100",
-            "--lr", "0.00003",
+            "--num_timesteps", "2000000",  #  2000000
+            "--nsteps", "100",  # PPO:2048, RecurrentPPO:128/256 change according to algo/policy or left default (have to uncomment in build_dqn/ppo_model())
             "--seed", "5",
             "--initial_vm_count", "1",
-            "--network", "lstm_mlp",
-            "--nlstm", "128",
-            "--layer_norm", "True",
             "--nminibatches", "1",
-            "--save_interval", "10000",
             "--queue_wait_penalty", "0.0005",
-            "--max_grad_norm", "1",
-            "--noptepochs", "10",
-            "--vfcliprange", "10.0"
+            "--policy", "MlpLstmPolicy", # MlpLstmPolicy, CnnLstmPolicy, MlpPolicy, CnnPolicy
+            "--algo", "RecurrentPPO", # DQN, PPO, RecurrentPPO
             ]
     depends_on:
       - simulator
     volumes:
       - "./training_logs:/logs"
-      - "./output_model:/output_model"
+      - "./output_models_initial:/output_models_initial"
+      - "./initial_model:/initial_model"
       - "./input_workloads:/input_workloads"
 
