@@ -2,6 +2,8 @@
 aws-creds
 output_model/**
 output_models/
+output_models_initial/
+# initial_model/
 ignored/**
 .direnv
 *.swp
