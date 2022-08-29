@@ -1,0 +1,92 @@
+version: '3'
+services:
+  simulator: 
+    restart: "no"
+    image: pkoperek/cloudsimplus-gateway:1.8.2
+    environment:
+      # sets the number of hosts in the datacenter
+      # we assume that every host can hold 2+4+8 CPUs (so 1 vm of each type)
+      - DATACENTER_HOSTS_CNT=18
+    expose: 
+      - "25333"
+
+  sammdb:
+    image: postgres:10
+    environment:
+      - POSTGRES_USER=samm
+      - POSTGRES_PASSWORD=samm
+      - POSTGRES_DB=samm
+      - PGDATA=/storage
+    volumes:
+      - ./ignored/samm_pgdata:/storage
+      - ./db_init/sammdb.sql:/docker-entrypoint-initdb.d/sammdb.sql
+      - ./db_init/synthetic_metrics.sql:/docker-entrypoint-initdb.d/synthetic_metrics.sql
+    ports:
+      - "5432:5432"
+
+  dnnevodb:
+    image: postgres:10
+    environment:
+      - POSTGRES_USER=dnnevo
+      - POSTGRES_PASSWORD=dnnevo
+      - POSTGRES_DB=dnnevo
+      - PGDATA=/storage
+    volumes:
+      - ./ignored/dnnevo_pgdata:/storage
+      - ./db_init/dnnevodb.sql:/docker-entrypoint-initdb.d/dnnevodb.sql
+      - ./db_init/synthetic_workload.sql:/docker-entrypoint-initdb.d/synthetic_workload.sql
+    ports:
+      - "5433:5432"
+
+  oracle:
+    image: pkoperek/baselinesme:2021-01-02
+    environment:
+      - POLICY_STORAGE_DIRECTORY=/srv/new_policies
+      - INITIAL_POLICY=/srv/initial_policy/small_policy.bin
+      - INITIAL_NETWORK_TYPE=lstm
+    volumes:
+      - ./prod_policy:/srv/initial_policy
+      - ./oracle_policies:/srv/new_policies
+    ports:
+      - 8082:8080
+
+  policytrainer:
+    build: .
+    # image: amalota/trainloop-driver:1.3.6
+#    image: amalota/trainloop-driver:1.3.6
+    environment:
+      - CLOUDSIM_GATEWAY_HOST=simulator
+      - CLOUDSIM_GATEWAY_PORT=25333
+    # Parameters from 10MM
+    command: ["trainloop",
+              "--env", "ThreeSizeAppEnv-v1",
+              "--num_env", "3",
+              "--simulator_speedup", "60", 
+              "--queue_wait_penalty", "0.0005",
+              "--save_path", "/output_models",
+              "--seed", "1",
+              "--mips_per_core", "4400",
+              "--log_path", "/logs",
+              "--num_timesteps", "1000",    # 2x nsteps
+              "--n_steps", "128",
+              "--iteration_length_s", "300", # 10 for testing, 300 for normal run
+              "--initial_timestamp", "0",
+              "--initial_vm_count_no_data", "3",
+              "--initial_model", "use_initial_policy",
+              "--policy", "MlpPolicy", # MlpLstmPolicy, MlpPolicy, CnnPolicy
+              "--algo", "PPO", # DQN, PPO, RecurrentPPO
+#              "--initial_model", "/best_model/best_model",
+              "--nminibatches", "1", # to stop recurrent networks from breaking
+              "--continuous_mode"]
+    depends_on:
+      - simulator
+      - sammdb
+      - dnnevodb
+      - oracle
+    volumes:
+      - "./output_models:/output_models"
+      - "./best_model:/best_model"
+      - "./input_workloads:/input_workloads"
+      - "./initial_model:/initial_model"
+      - "./logs:/logs"
+      - "./prod_policy:/initial_policy"

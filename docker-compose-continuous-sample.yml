@@ -167,6 +167,7 @@ services:
               "--network", "lstm",
               "--iteration_length_s", "1800",
               "--initial_model", "/initial_policy/small_policy.bin",
+              "--queue_wait_penalty", "0.0005",
               "--nminibatches", "1",
               "--continuous_mode"]
 #              "--initial_timestamp", "0",

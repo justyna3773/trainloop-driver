@@ -18,6 +18,7 @@ import stable_baselines3
 import sb3_contrib
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
 
 from driver import logger
 from driver.common.cmd_util import (
@@ -32,6 +33,7 @@ from driver.common.db import (
 )
 from driver.common.swf_jobs import get_jobs_from_file
 from driver.baseline_models import RandomModel, SimpleCPUThresholdModel
+from driver.wrappers import TimeLimit
 
 
 submitted_jobs_cnt: int = 0
@@ -96,52 +98,80 @@ for env in gym.envs.registry.all():
     _game_envs[env_type].add(env.id)
 
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.results_plotter import load_results, ts2xy
-from tqdm.auto import tqdm
+from stable_baselines3.common import results_plotter
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.results_plotter import load_results, ts2xy, plot_results
 
-
-class ProgressBarCallback(BaseCallback):
+class SaveOnBestTrainingRewardCallback(BaseCallback):
     """
-    :param pbar: (tqdm.pbar) Progress bar object
+    Callback for saving a model (the check is done every ``check_freq`` steps)
+    based on the training reward (in practice, we recommend using ``EvalCallback``).
+
+    :param check_freq:
+    :param log_dir: Path to the folder where the model will be saved.
+      It must contains the file created by the ``Monitor`` wrapper.
+    :param verbose: Verbosity level.
     """
-
-    def __init__(self, pbar):
-        super(ProgressBarCallback, self).__init__()
-        self._pbar = pbar
-
-    def _on_step(self):
-        # Update the progress bar:
-        self._pbar.n = self.num_timesteps
-        self._pbar.update(0)
-
-
-# this callback uses the 'with' block, allowing for correct initialisation and destruction
-class ProgressBarManager(object):
-    def __init__(self, total_timesteps):  # init object with total timesteps
-        self.pbar = None
+    def __init__(self, check_freq: int, log_dir: str, total_timesteps: int, verbose: int = 1, intermediate_models: int = 5):
+        super(SaveOnBestTrainingRewardCallback, self).__init__(verbose)
+        self.check_freq = check_freq
+        self.log_dir = log_dir
+        self.save_path = os.path.join(log_dir, 'best_model')
+        self.best_mean_reward = -np.inf
         self.total_timesteps = total_timesteps
+        self.intermediate_models = intermediate_models
+        self.save_count = 0
 
-    def __enter__(self):  # create the progress bar and callback, return the callback
-        self.pbar = tqdm(total=self.total_timesteps)
+    def _init_callback(self) -> None:
+        # Create folder if needed
+        if self.save_path is not None:
+            os.makedirs(self.save_path, exist_ok=True)
 
-        return ProgressBarCallback(self.pbar)
+    def _on_step(self) -> bool:
+        # if self.n_calls % 100 == 0:
+        #     self.model.save(self.save_path + '_' + str(self.n_calls))
+        if self.n_calls % self.check_freq == 0:
 
-    def __exit__(self, exc_type, exc_val, exc_tb):  # close the callback
-        self.pbar.n = self.total_timesteps
-        self.pbar.update(0)
-        self.pbar.close()
+          # Retrieve training reward
+          x, y = ts2xy(load_results(self.log_dir), 'timesteps')
+          if len(x) > 0:
+              # Mean training reward over the last 100 episodes
+              mean_reward = np.mean(y[-100:])
+              if self.verbose > 0:
+                print(f"Num timesteps: {self.num_timesteps}")
+                print(f"Best mean reward: {self.best_mean_reward:.2f} - Last mean reward per episode: {mean_reward:.2f}")
+
+              # New best model, you could save the agent here
+              if mean_reward > self.best_mean_reward:
+                  self.best_mean_reward = mean_reward
+                  # Example for saving best model
+                  if self.verbose > 0:
+                    print(f"Saving new best model to {self.save_path}")
+                  self.model.save(self.save_path)
+        freq = self.total_timesteps // self.intermediate_models
+        if self.n_calls % freq == 0 or self.n_calls == 1:
+            if self.verbose > 0:
+                print(f"Saving {self.save_count}th intermediete model to {self.save_path + str(self.save_count)}")
+            self.model.save(self.save_path + '_' + str(self.save_count) + '_' + str(self.n_calls))
+            self.save_count += 1
+
+        return True
 
 
 def train(args,
           model,
           extra_args,
           env,
+          tensorboard_log,
+          use_callback=True
           ):
     total_timesteps = int(args.num_timesteps)
-
+    nsteps = int(args.n_steps)
     logger.info(model)
-    with ProgressBarManager(total_timesteps) as pbar_callback:
-        model.learn(total_timesteps, callback=pbar_callback)
+    # Create the callback: check every 1000 steps
+    callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=tensorboard_log, total_timesteps=total_timesteps, intermediate_models=4)
+    # Train the agent
+    model.learn(total_timesteps=total_timesteps, callback=callback if use_callback else None)
     return model
 
 
@@ -227,7 +257,7 @@ def get_workload(args, extra_args):
 
 def build_env(args, extra_args):
     alg = args.alg
-    seed = args.seed
+    seed = int(args.seed)
     initial_vm_count = args.initial_vm_count
     simulator_speedup = args.simulator_speedup
     queue_wait_penalty = args.queue_wait_penalty
@@ -266,12 +296,35 @@ def build_env(args, extra_args):
         'queue_wait_penalty': str(queue_wait_penalty)
     }
 
+    # # Create log dir
+    # log_dir = "tmp/"
+    # os.makedirs(log_dir, exist_ok=True)
+
+    # # Create and wrap the environment
+    # env = Monitor(env, log_dir)
+    algo = args.algo
+    policy = args.policy
+    tensorboard_log = f"/output_models_initial/{algo.lower()}/{policy}/"
+
+    # from gym.wrappers.time_limit import TimeLimit
     logger.info(args)
+    def custom_wrapper(env):
+        env = TimeLimit(env, 
+            max_episode_steps=500, 
+            penalty=-0.1
+            )
+        return env
+
     env = make_vec_env(env_id=env_id,
                        n_envs=args.num_env or 1,
-                    #    seed=seed,
-                       env_kwargs=env_kwargs,
+                       monitor_dir=tensorboard_log,
+                       seed=seed,
+                       wrapper_class=custom_wrapper,
+                       env_kwargs=env_kwargs
                        )
+    
+    env = VecNormalize(env, norm_obs=False)
+
     return env
 
 
@@ -330,6 +383,7 @@ def test_model(model, env, n_runs=6):
     episode_rewards = []
     episode_rewards_per_run = []
     observations = []
+    actions = []
     observations_evalute_results = []
     episode_lenghts = []
     cores_count = []
@@ -344,10 +398,10 @@ def test_model(model, env, n_runs=6):
         done = False
         while not done:
             if state is not None:
-                actions, _, state, _ = model.predict(obs, S=state, M=dones)
+                action, _, state, _ = model.predict(obs, S=state, M=dones)
             else:
-                actions, _states = model.predict(obs)
-            obs, rew, done, _ = env.step(actions)
+                action, _states = model.predict(obs)
+            obs, rew, done, _ = env.step(action)
             reward = rew[0]
             episode_reward += reward
             obs_arr = env.render(mode='array')
@@ -356,6 +410,7 @@ def test_model(model, env, n_runs=6):
             print(f'mean obs {np.array(obs).mean(axis=1)}')
             observations_run.append(obs)
             observations.append(obs)
+            actions.append(action)
             rewards_run.append(reward)
             episode_len += 1
 
@@ -369,7 +424,7 @@ def test_model(model, env, n_runs=6):
     # print(episode_rewards)
     mean_episode_reward = np.array(episode_rewards_per_run).mean()
     print(f'Mean reward after {n_runs} runs: {mean_episode_reward}')
-    return mean_episode_reward, observations, np.array(episode_lenghts), np.array(episode_rewards), np.array(episode_rewards_per_run), np.array(observations_evalute_results)
+    return mean_episode_reward, observations, np.array(episode_lenghts), np.array(episode_rewards), np.array(episode_rewards_per_run), np.array(observations_evalute_results), np.array(actions)
 
 
 # def update_oracle_policy(model_save_path):
@@ -387,30 +442,32 @@ def test_model(model, env, n_runs=6):
 #     resp = requests.post(oracle_update_url, json=req_payload)
 #     logger.log(f'Model updated ({resp.status_code}): {resp.text}')
 
-def build_dqn_model(AlgoClass, policy, tensorboard_log, env):
+def build_dqn_model(AlgoClass, policy, tensorboard_log, env, args):
     return AlgoClass(policy=policy,
                      env=env,
                     #  learning_rate=0.0001,
-                     exploration_fraction=0.15,
+                     exploration_fraction=0.2,
                     #  batch_size=64,
                     #  buffer_size=10000,
                     #  learning_starts=1000,
                     #  target_update_interval=500,
                      verbose=1,
+                     seed=int(args.seed),
                      tensorboard_log=tensorboard_log)
 
-def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps):
+def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps, args):
     return AlgoClass(policy=policy,
                      env=env,
                      n_steps=n_steps,
-                     learning_rate=0.00003,
-                     vf_coef=1,
-                     clip_range_vf=10.0,
-                     max_grad_norm=1,
-                     gamma=0.95,
-                     ent_coef=0.001,
-                     clip_range=0.05,
+                    #  learning_rate=0.00003, # 0.00003
+                    #  vf_coef=1,
+                    #  clip_range_vf=10.0,
+                    #  max_grad_norm=1,
+                    #  gamma=0.95,
+                    #  ent_coef=0.001,
+                    #  clip_range=0.05,
                      verbose=1,
+                     seed=int(args.seed),
                      tensorboard_log=tensorboard_log)
 
 def data_available(val):
@@ -434,6 +491,7 @@ def training_loop(args, extra_args):
     global_start = time.time()
     initial_timestamp = global_start if args.initial_timestamp < 0 else args.initial_timestamp
     iterations = 0
+    n_features = 7
     running = True
     env = None
     algo = args.algo
@@ -462,10 +520,10 @@ def training_loop(args, extra_args):
 
     if 'Cnn' in policy:
         args.observation_history_length = 15
-        all_observations = np.zeros((1, 1, 1, args.observation_history_length, 7))
+        all_observations = np.zeros((1, 1, 1, args.observation_history_length, n_features))
     else:
         args.observation_history_length = 1
-        all_observations = np.zeros((1, args.observation_history_length, 7))
+        all_observations = np.zeros((1, args.observation_history_length, n_features))
 
     logger.log(f'Using {algo} with {policy}')
     logger.log(f'Waiting for first {iteration_length_s} to make sure enough '
@@ -547,26 +605,29 @@ def training_loop(args, extra_args):
                                                 env=env,
                                                 tensorboard_log=tensorboard_log)
                 else:
-                    if args.initial_model:
+                    initial_model_path = f'/initial_model/best_models/{algo.lower()}_{policy}'
+                    if args.initial_model == 'use_initial_policy':
                         logger.info(f'No model from previous iteration, using the '
                                     f'initial one')
-                        print(os.getcwd())
-                        model = AlgoClass.load(path=f'/initial_model/{algo.lower()}/{policy}/{algo.lower()}_{policy}',
+                        
+                        model = AlgoClass.load(path=initial_model_path,
                                                env=env,
                                                tensorboard_log=tensorboard_log)
                     else:
                         logger.info(f'No model from previous iteration and no initial model, creating '
                                     f'new model')
                         if algo == 'DQN':
-                            model = build_dqn_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log)
+                            model = build_dqn_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, args=args)
                         else:
-                            model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps)
+                            model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps, args=args)
 
                 logger.info('New environment built...')
                 model = train(args,
                               model,
                               updated_extra_args,
-                              env)
+                              env,
+                              tensorboard_log=tensorboard_log,
+                              use_callback=False)
 
                 model_save_path = f'{base_save_path}_{iterations}.zip'
                 model.save(model_save_path)
@@ -581,10 +642,11 @@ def training_loop(args, extra_args):
                 args.num_env = 1
                 env = build_env(args, updated_extra_args)
                 args.num_env = num_env
-                new_policy_total_reward, observations, episode_lenghts, _, _, _ = test_model(model, env)
+                new_policy_total_reward, observations, episode_lenghts, episode_rewards, rewards_per_run, observations_evalute_results, actions = test_model(model, env, n_runs=15)
                 rewards.append(new_policy_total_reward)
                 mean_episode_lenghts.append(episode_lenghts.mean())
 
+                logger.info(f'Save: training_data, observations and actions.')
                 df = pd.DataFrame()
                 df['reward'] = rewards
                 df['episode_len'] = mean_episode_lenghts
@@ -595,10 +657,14 @@ def training_loop(args, extra_args):
                 with open(f'/best_model/{algo.lower()}/{policy}/observations.npy', 'wb') as f:
                     np.save(f, all_observations)
 
+                
+                with open(f'/best_model/{algo.lower()}/{policy}/actions.npy', 'wb') as f:
+                    np.save(f, actions)
+       
                 if iterations > 0:
                     if best_policy_total_reward is None:
                         best_model = AlgoClass.load(best_model_path)
-                        best_policy_total_reward, _, _, _, _, _ = test_model(best_model, env)
+                        best_policy_total_reward, _, _, _, _, _, _ = test_model(best_model, env)
 
                     logger.info(f'Best policy reward: {best_policy_total_reward} '
                                 f'new policy reward: {new_policy_total_reward}')
@@ -636,22 +702,18 @@ def training_once(args, extra_args):
     policy = args.policy
     tensorboard_log = f"/output_models_initial/{algo.lower()}/{policy}/"
     n_steps = int(args.n_steps)
+    n_features = 7
     try:
         AlgoClass = getattr(stable_baselines3, algo)
     except:
         AlgoClass = getattr(sb3_contrib, algo)
 
-    # algo_tag = f"{algo.lower()}/{policy}"
-    # base_save_path = os.path.join(base_save_path, algo_tag)
-    # date_tag = datetime.datetime.today().strftime('%Y-%m-%d_%H_%M_%S')
-    # base_save_path = os.path.join(base_save_path, date_tag)
-
     if 'Cnn' in policy:
         args.observation_history_length = 15
-        all_observations = np.zeros((1, 1, 1, args.observation_history_length, 7))
+        all_observations = np.zeros((1, 1, 1, args.observation_history_length, n_features))
     else:
         args.observation_history_length = 1
-        all_observations = np.zeros((1, args.observation_history_length, 7))
+        all_observations = np.zeros((1, args.observation_history_length, n_features))
 
     initial_model_path = f'/initial_model/{algo.lower()}/{policy}/{algo.lower()}_{policy}'
 
@@ -660,18 +722,53 @@ def training_once(args, extra_args):
 
     # build model
     if algo == 'DQN':
-        model = build_dqn_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log)
+        model = build_dqn_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, args=args)
     else:
-        model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps)
+        model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps, args=args)
 
+    import signal
+    import sys
+
+    def signal_handler(sig, frame):
+        logger.warn(f'Forced stop to the training process!')
+        logger.info(f'Test the model')
+        env.reset()
+        num_env = args.num_env
+        args.num_env = 1
+        env = build_env(args, extra_args)
+        args.num_env = num_env
+        new_policy_total_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions = test_model(model, env, n_runs=15)
+
+        print(rewards.shape)
+        df = pd.DataFrame()
+        df['reward'] = rewards_per_run
+        df['episode_len'] = episode_lenghts
+
+        logger.info(f'Save: training_data, observations and actions.')
+        df.to_csv(f'/initial_model/{algo.lower()}/{policy}/training_data.csv')
+
+        all_observations = np.append(all_observations, observations, axis=0)
+        with open(f'/initial_model/{algo.lower()}/{policy}/observations.npy', 'wb') as f:
+            np.save(f, all_observations)
+
+        with open(f'/initial_model/{algo.lower()}/{policy}/actions.npy', 'wb') as f:
+            np.save(f, actions)
+        
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
 
     # train the model
     if env:
         logger.info('New environment built...')
+        
+        logger.info('Started training...')
         model = train(args,
-                      model,
-                      extra_args,
-                      env)
+                    model,
+                    extra_args,
+                    env,
+                    tensorboard_log=tensorboard_log)
+
 
         model.save(initial_model_path)
 
@@ -681,7 +778,7 @@ def training_once(args, extra_args):
         args.num_env = 1
         env = build_env(args, extra_args)
         args.num_env = num_env
-        new_policy_total_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results = test_model(model, env, n_runs=10)
+        new_policy_total_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions = test_model(model, env, n_runs=15)
 
         print(rewards.shape)
         df = pd.DataFrame()
@@ -693,11 +790,14 @@ def training_once(args, extra_args):
         with open(f'/initial_model/{algo.lower()}/{policy}/observations.npy', 'wb') as f:
             np.save(f, all_observations)
 
+        with open(f'/initial_model/{algo.lower()}/{policy}/actions.npy', 'wb') as f:
+            np.save(f, actions)
+
     env.close()
     logger.log('Training once: ended')
 
 
-def evaluate(args, extra_args):
+def evaluate_continuous(args, extra_args):
     logger.log('Initializing databases')
     init_dbs()
     logger.log('Initialized databases')
@@ -812,12 +912,82 @@ def evaluate(args, extra_args):
                         evaluation_results[f'episode_lenghts_{policy}'] = episode_lenghts
 
                     with open(f'/best_model/observations/observations_{args.observation_history_length}.npy', 'wb') as f:
-                                np.save(f, observations_evalute_results)
+                        np.save(f, observations_evalute_results)
 
                     with open(f'/best_model/rewards/rewards_{algo.lower()}_{policy}.npy', 'wb') as f:
                         np.save(f, observations_evalute_results)
 
         evaluation_results.to_csv(f'/best_model/evaluation_results.csv')
+
+    env.close()
+    logger.log('Evaluation ended')
+
+def evaluate_sample(args, extra_args):
+    # build env
+    env = build_env(args, extra_args)
+
+    if env:
+        models = {
+            'RandomModel': [RandomModel(action_space=env.action_space)],
+            'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
+            'DQN': {
+                'MlpPolicy', 
+                'CnnPolicy'
+                },
+            'PPO': {
+                'MlpPolicy', 
+                'CnnPolicy'
+                },
+            'RecurrentPPO': {
+                'MlpLstmPolicy', 
+                'CnnLstmPolicy'
+                },
+        }
+        evaluation_results = pd.DataFrame([])
+        for algo, policies in models.items():
+            if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
+                try:
+                    AlgoClass = getattr(stable_baselines3, algo)
+                except:
+                    AlgoClass = getattr(sb3_contrib, algo)
+            for policy in policies:
+                if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
+                    X = np.load(f'/initial_model/best_models/{algo.lower()}/{policy}/observations.npy')
+                    args.observation_history_length = f'{X.shape[-2]}'
+                else:
+                    args.observation_history_length = '1'
+                env = build_env(args, extra_args)
+                if env is not None:
+                    logger.log(f'Loading best {algo} model, with {policy} and observation history length {args.observation_history_length}')
+                    if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
+                        model = AlgoClass.load(path=f'/initial_model/best_models/{algo.lower()}_{policy}',
+                                            env=env)
+
+                        # model = AlgoClass.load(path=f'/initial_model/best_models/{algo.lower()}_{policy}.zip',
+                        #                     env=env)
+                    else:
+                        model = policy
+                    logger.log('Evaluating...')
+                    logger.log(env.reset())
+                    mean_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions  = test_model(model, env, n_runs=20)
+                    
+                    if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
+                        evaluation_results[f'rewards_per_run_{algo}_{policy}'] = rewards_per_run
+                        evaluation_results[f'episode_lenghts_{algo}_{policy}'] = episode_lenghts
+                    else:
+                        evaluation_results[f'rewards_per_run_{policy}'] = rewards_per_run
+                        evaluation_results[f'episode_lenghts_{policy}'] = episode_lenghts
+
+                    with open(f'/initial_model/observations/observations_{algo.lower()}_{policy}_{args.observation_history_length}.npy', 'wb') as f:
+                        np.save(f, np.array(observations))
+
+                    with open(f'/initial_model/rewards/rewards_{algo.lower()}_{policy}.npy', 'wb') as f:
+                        np.save(f, rewards)
+
+                    with open(f'/initial_model/actions/actions_{algo.lower()}_{policy}.npy', 'wb') as f:
+                        np.save(f, actions)
+
+        evaluation_results.to_csv(f'/initial_model/evaluation_results.csv')
 
     env.close()
     logger.log('Evaluation ended')
@@ -832,10 +1002,13 @@ def main():
     configure_logger(args.log_path, format_strs=['stdout', 'log', 'csv'])
     extra_args = parse_cmdline_kwargs(unknown_args)
 
-    if args.evaluate_mode:
-        evaluate(args, extra_args)
+    if args.evaluate_continuous_mode:
+        evaluate_continuous(args, extra_args)
         return
-    if args.continuous_mode:
+    elif args.evaluate_mode:
+        evaluate_sample(args, extra_args)
+        return
+    elif args.continuous_mode:
         training_loop(args, extra_args)
         return
     else:

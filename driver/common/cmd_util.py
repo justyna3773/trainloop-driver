@@ -196,6 +196,7 @@ def common_arg_parser():
     parser.add_argument('--workload_file', default=None, type=str)
     parser.add_argument('--mips_per_core', default=None, type=int)
     parser.add_argument('--continuous_mode', default=False, action='store_true')
+    parser.add_argument('--evaluate_continuous_mode', default=False, action='store_true')
     parser.add_argument('--evaluate_mode', default=False, action='store_true')
     parser.add_argument('--iteration_length_s', default=300, type=int,)
     parser.add_argument('--core_iteration_cost', default=0.00166666666, type=float)
