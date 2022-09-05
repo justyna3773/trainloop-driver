@@ -51,7 +51,6 @@ services:
               "--simulator_speedup", "60",
               "--queue_wait_penalty", "0.0005", # 0.00001
               "--save_path", "/output_models", 
-              "--mips_per_core", "3600", 
               "--seed", "1",
               "--mips_per_core", "4400",
               "--log_path", "/logs",
@@ -62,7 +61,7 @@ services:
               "--initial_vm_count_no_data", "3",
               # "--observation_history_length", "1", # 30 for CNN?
 #              "--initial_model", "/best_model/best_model",
-              "--nminibatches", "1", # to stop recurrent networks from breaking
+              "--continuous_mode",
               "--evaluate_continuous_mode"]
     depends_on:
       - simulator
@@ -71,5 +70,7 @@ services:
     volumes:
       - "./output_models:/output_models"
       - "./best_model:/best_model"
+      - "./initial_model:/initial_model"
+      - "./output_models_initial:/output_models_initial"
       - "./input_workloads:/input_workloads"
       - "./logs:/logs"

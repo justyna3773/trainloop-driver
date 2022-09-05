@@ -459,13 +459,13 @@ def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps, args):
     return AlgoClass(policy=policy,
                      env=env,
                      n_steps=n_steps,
-                    #  learning_rate=0.00003, # 0.00003
-                    #  vf_coef=1,
-                    #  clip_range_vf=10.0,
-                    #  max_grad_norm=1,
-                    #  gamma=0.95,
-                    #  ent_coef=0.001,
-                    #  clip_range=0.05,
+                     learning_rate=0.00003, # 0.00003
+                     vf_coef=1,
+                     clip_range_vf=10.0,
+                     max_grad_norm=1,
+                     gamma=0.95,
+                     ent_coef=0.001,
+                     clip_range=0.05,
                      verbose=1,
                      seed=int(args.seed),
                      tensorboard_log=tensorboard_log)
@@ -702,7 +702,7 @@ def training_once(args, extra_args):
     policy = args.policy
     tensorboard_log = f"/output_models_initial/{algo.lower()}/{policy}/"
     n_steps = int(args.n_steps)
-    n_features = 7
+    n_features = 6
     try:
         AlgoClass = getattr(stable_baselines3, algo)
     except:
@@ -869,11 +869,13 @@ def evaluate_continuous(args, extra_args):
         env = build_env(args, updated_extra_args)
 
         models = {
-            'RandomModel': [RandomModel(action_space=env.action_space)],
-            'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
-            'DQN': {'MlpPolicy', 'CnnPolicy'},
-            'PPO': {'MlpPolicy', 'CnnPolicy'},
-            'RecurrentPPO': {'MlpLstmPolicy', 'CnnLstmPolicy'},
+            # 'RandomModel': [RandomModel(action_space=env.action_space)],
+            # 'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
+            # 'DQN': {'MlpPolicy', 'CnnPolicy'},
+            # 'PPO': {'MlpPolicy', 'CnnPolicy'},
+            'RecurrentPPO': {'MlpLstmPolicy', 
+            # 'CnnLstmPolicy'
+            },
         }
         baseline_models_list = ['RandomModel']
         evaluation_results = pd.DataFrame([])
@@ -885,7 +887,8 @@ def evaluate_continuous(args, extra_args):
                     AlgoClass = getattr(sb3_contrib, algo)
             for policy in policies:
                 if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
-                    X = np.load(f'/best_model/{algo.lower()}/{policy}/observations.npy')
+                    # X = np.load(f'/best_model/{algo.lower()}/{policy}/observations.npy')
+                    X = np.load(f'/initial_model/best_models/{algo.lower()}/{policy}/observations.npy')
                     args.observation_history_length = f'{X.shape[-2]}'
                 else:
                     args.observation_history_length = '1'
@@ -896,13 +899,14 @@ def evaluate_continuous(args, extra_args):
                         # model = AlgoClass.load(path=f'/best_model/{algo.lower()}/{policy}/best_model.zip',
                         #                     env=env)
 
-                        model = AlgoClass.load(path=f'/best_model/best_models/{algo.lower()}_{policy}.zip',
-                                            env=env)
+                        # model = AlgoClass.load(path=f'/best_model/best_models/{algo.lower()}_{policy}.zip',
+                        #                     env=env)
+                        model = AlgoClass.load(path=f'/initial_model/best_models/{algo.lower()}_{policy}', env=env)
                     else:
                         model = policy
                     logger.log('Evaluating...')
                     logger.log(env.reset())
-                    mean_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results  = test_model(model, env, n_runs=10)
+                    mean_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions   = test_model(model, env, n_runs=10)
                     
                     if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
                         evaluation_results[f'rewards_per_run_{algo}_{policy}'] = rewards_per_run
@@ -928,19 +932,19 @@ def evaluate_sample(args, extra_args):
 
     if env:
         models = {
-            'RandomModel': [RandomModel(action_space=env.action_space)],
-            'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
-            'DQN': {
-                'MlpPolicy', 
-                'CnnPolicy'
-                },
-            'PPO': {
-                'MlpPolicy', 
-                'CnnPolicy'
-                },
+            # 'RandomModel': [RandomModel(action_space=env.action_space)],
+            # 'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
+            # 'DQN': {
+            #     'MlpPolicy', 
+            #     'CnnPolicy'
+            #     },
+            # 'PPO': {
+            #     'MlpPolicy', 
+            #     'CnnPolicy'
+            #     },
             'RecurrentPPO': {
                 'MlpLstmPolicy', 
-                'CnnLstmPolicy'
+                # 'CnnLstmPolicy'
                 },
         }
         evaluation_results = pd.DataFrame([])
@@ -969,7 +973,7 @@ def evaluate_sample(args, extra_args):
                         model = policy
                     logger.log('Evaluating...')
                     logger.log(env.reset())
-                    mean_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions  = test_model(model, env, n_runs=20)
+                    mean_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions  = test_model(model, env, n_runs=10)
                     
                     if algo not in ['RandomModel', 'SimpleCPUThresholdModel']:
                         evaluation_results[f'rewards_per_run_{algo}_{policy}'] = rewards_per_run

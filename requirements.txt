@@ -2,9 +2,12 @@ git+https://github.com/andrzejmalota/stable-baselines3@custom_cnn_env#egg=stable
 
 git+https://github.com/andrzejmalota/stable-baselines3-contrib@custom_cnn_layer#egg=sb3-contrib
 
+# original
 # git+https://github.com/pkoperek/gym_cloudsimplus#egg=gym_cloudsimplus
-git+https://github.com/andrzejmalota/gym_cloudsimplus@pytorch_cnn#egg=gym_cloudsimplus
-
+# mine - all features
+# git+https://github.com/andrzejmalota/gym_cloudsimplus@pytorch_cnn#egg=gym_cloudsimplus
+# mine - one feature less
+git+https://github.com/andrzejmalota/gym_cloudsimplus@pytorch_cnn_remove_feature#egg=gym_cloudsimplus
 
 
 # stable-baselines3[extra]==1.0
