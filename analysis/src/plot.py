@@ -80,22 +80,21 @@ def plot_mean_attributions_per_action(mean_attributions, action_names=Utils.ACTI
                                                     )
             plt.show()
 
-def plot_mean_attributions(mean_attributions, action_names=Utils.ACTION_NAMES, feature_names=Utils.FEATURE_NAMES, policy='mlp', abs=False):
+def plot_mean_attributions(mean_attributions, action_names=Utils.ACTION_NAMES, feature_names=Utils.FEATURE_NAMES, policy='mlp', abs=False, title_postfix=''):
     if policy == 'mlp':
         if abs:
             plt.figure(figsize=(10, 1.5))
-            plt.title(f'Absolute mean attributions - Feature Importance')
+            plt.title(f'Absolute mean attributions - Feature Importance' + title_postfix)
             mean_attributions = np.abs(mean_attributions)
             df = pd.DataFrame(mean_attributions, columns=feature_names)
             mean_attributions = df.mean(axis=0).sort_values(ascending=False)
-            print(mean_attributions)
             plt.bar(x=[x for x in range(len(mean_attributions.index))], height=mean_attributions)
             plt.xticks(range(len(mean_attributions.index)), mean_attributions.index, rotation=30)
 
         else:
             x_axis_data = list(range(len(feature_names)))
             plt.figure(figsize=(10, 1.5))
-            plt.title(f'Mean attributions')
+            plt.title(f'Mean attributions' + title_postfix)
             plt.xticks(x_axis_data, feature_names, rotation=30)
             # plt.ylim([-1, 1])
             color = []
@@ -187,7 +186,7 @@ def plot_attributions(idx, attributions, img, action_names=Utils.ACTION_NAMES, f
                 color.append(POSITIVE_VALUE_COLOR)
         axs[i+1].bar(x_data, ig_attr, color=color)
 
-def plot_attribution(idx, attributions, action, img, action_names=Utils.ACTION_NAMES, feature_names=Utils.FEATURE_NAMES):
+def plot_attribution(idx, attributions, action, img, action_names=Utils.ACTION_NAMES, feature_names=Utils.FEATURE_NAMES, title_postfix=''):
     fig, axs = plt.subplots(2, 1, figsize=(10, 4), sharex=True)
     color = []
     for val in img:
@@ -204,7 +203,7 @@ def plot_attribution(idx, attributions, action, img, action_names=Utils.ACTION_N
     x_data = np.arange(len(feature_names))
     plt.xticks(x_data, feature_names, rotation=25)
     axs[1].set_ylim([attributions[idx][0].min(), attributions[idx][0].max()])
-    axs[1].set_title(f'Attributions for action: {action_names[action]}')
+    axs[1].set_title(f'Attributions for action: {action_names[action]}' + title_postfix)
     # plt.set_title(f'Attributions for action: {action_names[i]}')
     color = []
     ig_attr = attributions[idx][0]

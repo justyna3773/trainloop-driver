@@ -42,7 +42,7 @@ class IGAttributor:
         # return self.attributions_normalized
         return [action_att.mean(0) for action_att in self.attributions]
 
-    def explain_example(self, idx, plot_env=True, all_actions=False, print_q_values=True):
+    def explain_example(self, idx, plot_env=True, all_actions=False, print_q_values=True, title_postfix=''):
         if self.agent == 'dqn':
             if self.policy == 'mlp':
                 self._explain_example_mlp(idx, plot_env, all_actions, print_q_values)
@@ -50,7 +50,7 @@ class IGAttributor:
                 return self._explain_example_cnn(idx, all_actions, print_q_values)
         elif self.agent == 'ppo':
             if self.policy == 'mlp':
-                self._explain_example_mlp_ppo(idx, plot_env)
+                self._explain_example_mlp_ppo(idx, plot_env, title_postfix=title_postfix)
             elif self.policy == 'cnn':
                 return self._explain_example_cnn_ppo(idx)
 
@@ -99,7 +99,7 @@ class IGAttributor:
             plot_attributions(idx=idx, attributions=self.attributions, img=x)
 
 
-    def _explain_example_mlp_ppo(self, idx, plot_env=True):
+    def _explain_example_mlp_ppo(self, idx, plot_env=True, title_postfix=''):
         if idx > self.data.shape[0]:
             raise ValueError('Idx exceeds data size')
         x = self.data[idx][0].numpy()
@@ -107,9 +107,7 @@ class IGAttributor:
         action_made = self.predictions[idx]
         # print(f'Action made: {self.action_names[action_made]}')
 
-        print(len(self.attributions))
-
-        plot_attribution(idx=idx, action=action_made, attributions=self.attributions[0], img=x)
+        plot_attribution(idx=idx, action=action_made, attributions=self.attributions[0], img=x, title_postfix=title_postfix)
 
     def _calculate_attributions_per_action(self):
         if len(self.data.shape) == 5:
