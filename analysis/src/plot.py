@@ -88,6 +88,7 @@ def plot_mean_attributions(mean_attributions, action_names=Utils.ACTION_NAMES, f
             mean_attributions = np.abs(mean_attributions)
             df = pd.DataFrame(mean_attributions, columns=feature_names)
             mean_attributions = df.mean(axis=0).sort_values(ascending=False)
+            print(mean_attributions)
             plt.bar(x=[x for x in range(len(mean_attributions.index))], height=mean_attributions)
             plt.xticks(range(len(mean_attributions.index)), mean_attributions.index, rotation=30)
 

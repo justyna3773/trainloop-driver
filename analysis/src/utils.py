@@ -8,7 +8,7 @@ class Utils:
                     "avgMemoryUtilization",
                     "p90MemoryUtilization",
                     "waitingJobsRatioGlobal",
-                    # "waitingJobsRatioRecent"
+                    "waitingJobsRatioRecent"
                     ]
 
     ACTION_NAMES = {

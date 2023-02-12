@@ -870,11 +870,11 @@ def evaluate_continuous(args, extra_args):
 
         models = {
             # 'RandomModel': [RandomModel(action_space=env.action_space)],
-            # 'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
-            # 'DQN': {'MlpPolicy', 'CnnPolicy'},
-            # 'PPO': {'MlpPolicy', 'CnnPolicy'},
+            'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
+            'DQN': {'MlpPolicy', 'CnnPolicy'},
+            'PPO': {'MlpPolicy', 'CnnPolicy'},
             'RecurrentPPO': {'MlpLstmPolicy', 
-            # 'CnnLstmPolicy'
+            'CnnLstmPolicy'
             },
         }
         baseline_models_list = ['RandomModel']
@@ -933,18 +933,18 @@ def evaluate_sample(args, extra_args):
     if env:
         models = {
             # 'RandomModel': [RandomModel(action_space=env.action_space)],
-            # 'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
-            # 'DQN': {
-            #     'MlpPolicy', 
-            #     'CnnPolicy'
-            #     },
-            # 'PPO': {
-            #     'MlpPolicy', 
-            #     'CnnPolicy'
-            #     },
+            'SimpleCPUThresholdModel': [SimpleCPUThresholdModel(action_space=env.action_space)],
+            'DQN': {
+                'MlpPolicy', 
+                'CnnPolicy'
+                },
+            'PPO': {
+                'MlpPolicy', 
+                'CnnPolicy'
+                },
             'RecurrentPPO': {
                 'MlpLstmPolicy', 
-                # 'CnnLstmPolicy'
+                'CnnLstmPolicy'
                 },
         }
         evaluation_results = pd.DataFrame([])
