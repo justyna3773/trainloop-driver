@@ -291,3 +291,20 @@ def plot_action_histogram(predictions, title=None):
     if title:
         plt.title(title)
     _ = plt.hist(predictions, bins=np.arange(0, len(Utils.ACTION_NAMES), .5), align='left')
+
+def plot_allocation_vs_queue(observations, title=None):
+        df = pd.DataFrame(observations, columns = Utils.FEATURE_NAMES)
+
+        N_steps = 1600
+        columns = [
+            "vmAllocatedRatio",
+            "waitingJobsRatioGlobal"
+            ]
+
+        fig = plt.figure(figsize=(12, 4))
+        plt.xlabel("Steps")
+        plt.ylabel("VMs in usage")
+        plt.plot(df[columns][:N_steps])
+        plt.title(title)
+        plt.legend(columns, loc='center right')
+        plt.show()

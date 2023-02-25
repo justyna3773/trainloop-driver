@@ -2,14 +2,15 @@ import numpy as np
 import pprint
 
 class Utils:
-    FEATURE_NAMES = ["vmAllocatedRatio",
-                    "avgCPUUtilization",
-                    "p90CPUUtilization",
-                    "avgMemoryUtilization",
-                    "p90MemoryUtilization",
-                    "waitingJobsRatioGlobal",
-                    "waitingJobsRatioRecent"
-                    ]
+    FEATURE_NAMES = [
+        "vmAllocatedRatio",
+        "avgCPUUtilization",
+        "p90CPUUtilization",
+        "avgMemoryUtilization",
+        "p90MemoryUtilization",
+        "waitingJobsRatioGlobal",
+        "waitingJobsRatioRecent"
+        ]
 
     ACTION_NAMES = {
         0:'NOTHING',
