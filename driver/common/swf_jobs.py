@@ -54,7 +54,8 @@ def get_jobs_from_file(fpath, mips_per_core):
     jobs = []
 
     mips_per_core_int = int(mips_per_core)
-
+    import os
+    print(os.getcwd())
     with open(fpath, 'r') as f:
         for line in f.readlines():
             if line.startswith(';'):

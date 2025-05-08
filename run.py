@@ -16,9 +16,11 @@ from collections import defaultdict
 from importlib import import_module
 import stable_baselines3
 import sb3_contrib
+from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
+from attention import FeatureAttentionPolicy, FeatureAttentionWeightsCallback, PCAFeaturePolicy, compute_pca, visualize_pca, get_attention_weights, print_top_features
 
 from driver import logger
 from driver.common.cmd_util import (
@@ -163,15 +165,28 @@ def train(args,
           extra_args,
           env,
           tensorboard_log,
-          use_callback=True
+          use_callback=True, 
+          attention=False,
+          pca=False
           ):
     total_timesteps = int(args.num_timesteps)
     nsteps = int(args.n_steps)
     logger.info(model)
     # Create the callback: check every 1000 steps
-    callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=tensorboard_log, total_timesteps=total_timesteps, intermediate_models=4)
+    if attention:
+        #callback = SaveObsAndModelCallback(save_freq=1000, save_path="") 
+        #usinng callback in one of the earlier implementations
+        #callback = SaveOnBestTrainingRewardCallback(check_freq=10000, log_dir=tensorboard_log, total_timesteps=total_timesteps, intermediate_models=4)
+        callback = FeatureAttentionWeightsCallback()
+    elif pca:
+        use_callback = False
+    else:
+        callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=tensorboard_log, total_timesteps=total_timesteps, intermediate_models=4)
     # Train the agent
     model.learn(total_timesteps=total_timesteps, callback=callback if use_callback else None)
+    if attention:
+        np.save("./models/attention_weights_history.npy", callback.attn_weights_history)
+
     return model
 
 
@@ -257,7 +272,7 @@ def get_workload(args, extra_args):
 
 def build_env(args, extra_args):
     alg = args.alg
-    seed = int(args.seed)
+    seed = int(args.seed) if args.seed else 42
     initial_vm_count = args.initial_vm_count
     simulator_speedup = args.simulator_speedup
     queue_wait_penalty = args.queue_wait_penalty
@@ -452,7 +467,7 @@ def build_dqn_model(AlgoClass, policy, tensorboard_log, env, args):
                     #  learning_starts=1000,
                     #  target_update_interval=500,
                      verbose=1,
-                     seed=int(args.seed),
+                     seed=int(args.seed) if args.seed else 42,
                      tensorboard_log=tensorboard_log)
 
 def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps, args):
@@ -467,8 +482,35 @@ def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps, args):
                      ent_coef=0.001,
                      clip_range=0.05,
                      verbose=1,
+                     seed=int(args.seed) if args.seed else 42,
+                     tensorboard_log=tensorboard_log)
+
+def build_attention_model(tensorboard_log, env, args):
+    return PPO(FeatureAttentionPolicy,env=env,
+                     learning_rate=0.00003, # 0.00003
+                     vf_coef=1,
+                     clip_range_vf=10.0,
+                     max_grad_norm=1,
+                     gamma=0.95,
+                     ent_coef=0.001,
+                     clip_range=0.05,
+                     verbose=1,
                      seed=int(args.seed),
                      tensorboard_log=tensorboard_log)
+
+def build_pca_model(tensorboard_log, env, args):
+    pca_components = compute_pca(env, n_samples=10000)
+    return PPO(
+    PCAFeaturePolicy,
+    env,
+    policy_kwargs={
+        'features_extractor_kwargs': {
+            'pca_components': pca_components
+        }
+    },
+    verbose=1
+)
+
 
 def data_available(val):
     if val is not None:
@@ -702,20 +744,24 @@ def training_once(args, extra_args):
     policy = args.policy
     tensorboard_log = f"/output_models_initial/{algo.lower()}/{policy}/"
     n_steps = int(args.n_steps)
-    n_features = 6
+    n_features = 7
     try:
         AlgoClass = getattr(stable_baselines3, algo)
     except:
-        AlgoClass = getattr(sb3_contrib, algo)
-
+        if algo=="Attention":
+            pass
+        elif algo=="PCA":
+            pass
+        else: AlgoClass = getattr(sb3_contrib, algo)
     if 'Cnn' in policy:
         args.observation_history_length = 15
         all_observations = np.zeros((1, 1, 1, args.observation_history_length, n_features))
     else:
         args.observation_history_length = 1
         all_observations = np.zeros((1, args.observation_history_length, n_features))
+    BASE_MODEL_PATH = './models'
 
-    initial_model_path = f'/initial_model/{algo.lower()}/{policy}/{algo.lower()}_{policy}'
+    initial_model_path = f'{algo.lower()}_{policy}_model'
 
     # build env
     env = build_env(args, extra_args)
@@ -723,6 +769,10 @@ def training_once(args, extra_args):
     # build model
     if algo == 'DQN':
         model = build_dqn_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, args=args)
+    elif algo=='Attention':
+        model = build_attention_model(env=env, tensorboard_log=tensorboard_log,args=args)
+    elif algo=='PCA':
+        model = build_pca_model(env=env, tensorboard_log=tensorboard_log,args=args)
     else:
         model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps, args=args)
 
@@ -763,15 +813,34 @@ def training_once(args, extra_args):
         logger.info('New environment built...')
         
         logger.info('Started training...')
+        use_attention = (algo == 'Attention')
+        print(f'Using attention:{use_attention}')
+        use_pca = (algo=='PCA')
+        print(f'Using PCA:{use_pca}')
         model = train(args,
                     model,
                     extra_args,
                     env,
-                    tensorboard_log=tensorboard_log)
+                    tensorboard_log=tensorboard_log,
+                    attention=use_attention, 
+                    pca=use_pca )
+        if use_pca:
+                        # After getting components using original function
+            pca_components, pca_obj, observations = compute_pca(env, 10000, visualize=True)
+            # If you have feature names (optional):
+            feature_names = [ "vmAllocatedRatio",
+            "avgPUUtilization",
+            "avgMemoryUtilization",
+            "p90MemoryUtiCPUUtilization",
+            "p90Clization",
+            "waitingJobsRatioGlobal",
+            "waitingJobsRatioRecent"] # example
+            visualize_pca(pca_obj, observations, feature_names)
 
+            # Without feature names:
+            #visualize_pca(pca_obj, observations)
 
-        model.save(initial_model_path)
-
+        model.save(os.path.join(BASE_MODEL_PATH, initial_model_path))
         logger.info(f'Test the model')
         env.reset()
         num_env = args.num_env
@@ -784,16 +853,27 @@ def training_once(args, extra_args):
         df = pd.DataFrame()
         df['reward'] = rewards_per_run
         df['episode_len'] = episode_lenghts
-        df.to_csv(f'/initial_model/{algo.lower()}/{policy}/training_data.csv')
-
+        #df.to_csv(f'/initial_model/{algo.lower()}/{policy}/training_data.csv')
+        df.to_csv(os.path.join(BASE_MODEL_PATH, f'{algo.lower()}_{policy}_training_data.csv'))
         all_observations = np.append(all_observations, observations, axis=0)
-        with open(f'/initial_model/{algo.lower()}/{policy}/observations.npy', 'wb') as f:
-            np.save(f, all_observations)
+        # with open(f'/initial_model/{algo.lower()}/{policy}/observations.npy', 'wb') as f:
+        #     np.save(f, all_observations)
 
-        with open(f'/initial_model/{algo.lower()}/{policy}/actions.npy', 'wb') as f:
-            np.save(f, actions)
-
+        # with open(f'/initial_model/{algo.lower()}/{policy}/actions.npy', 'wb') as f:
+        #     np.save(f, actions)
+        all_observations = np.append(all_observations, observations, axis=0)
+        np.save(os.path.join(BASE_MODEL_PATH, f'{algo.lower()}_{policy}_observations.npy'), all_observations)
+        logger.log('Observations saved')
+        np.save(os.path.join(BASE_MODEL_PATH, f'{algo.lower()}_{policy}_actions.npy'), actions)
+        logger.log('Actions saved')
     env.close()
+    if algo == 'Attention':
+        attn_weights = get_attention_weights(model, observations[0])
+        print_top_features(attn_weights, feature_names=None, top_k=3)
+        #batch_obs = np.array([env.reset() for _ in range(100)])
+        batch_weights = get_attention_weights(model, observations)
+        avg_weights = batch_weights.mean(axis=0)
+        print_top_features(avg_weights)
     logger.log('Training once: ended')
 
 
