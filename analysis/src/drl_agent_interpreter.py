@@ -39,8 +39,24 @@ class DRLAgentInterpreter:
             return PPO.load(agent_path)
         elif self.drl_agent_type == 'RecurrentPPO':
             return RecurrentPPO.load(agent_path)
-        else:
-            raise ValueError
+        elif self.drl_agent_type == 'Attention':
+            from attention_feature_extraction_2 import AdaptiveAttentionFeatureExtractor
+            loaded_model = PPO.load(
+            agent_path,           
+            custom_objects={
+                "features_extractor_class": AdaptiveAttentionFeatureExtractor,
+                "features_extractor_kwargs": {
+                    "max_reduced_dim": 8,
+                    "min_reduced_dim": 2,
+                    "key_dim": 16,
+                    "value_dim": 16,
+                    "temp_init": 1.0,
+                    "temp_decay": 0.995
+                }
+            }
+        )
+            return loaded_model
+    
 
     def __load_observations(self, observations_path: str):
         return torch.Tensor(np.load(observations_path))
