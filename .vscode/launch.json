@@ -1,0 +1,18 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Debugpy Old: Current File with Arguments",
+            "type": "debugpy-old",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": ["--env", "ThreeSizeAppEnv-v1", "--policy", "MlpPolicy", "--algo", "Attention", "--model_name", "mlp_malota", "--initial_vm_count", "1", "--queue_wait_penalty", "0.0005", "--num_timesteps", "50_000", "--simulator_speedup", "60.0"],
+            "justMyCode": true
+        }
+    ]
+}

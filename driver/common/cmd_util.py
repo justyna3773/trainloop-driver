@@ -176,11 +176,12 @@ def common_arg_parser():
     Create an argparse.ArgumentParser for run_mujoco.py.
     """
     parser = arg_parser()
-    parser.add_argument('--env', help='environment ID', type=str, default='SingleDCAppEnv-v0')
+    parser.add_argument('--env', help='environment ID', type=str, default="ThreeSizeAppEnv-v1")
+                        #default='SingleDCAppEnv-v0')
     parser.add_argument('--env_type', help='type of environment, used when the environment type cannot be automatically determined', type=str)
-    parser.add_argument('--seed', help='RNG seed', type=int, default=None)
+    parser.add_argument('--seed', help='RNG seed', type=str, default=42)
     parser.add_argument('--alg', help='Algorithm', type=str, default='ppo2')
-    parser.add_argument('--num_timesteps', type=float, default=1e6),
+    parser.add_argument('--num_timesteps', type=float, default=1000)#default=1e6),
     parser.add_argument('--network', help='network type (mlp, cnn, lstm, cnn_lstm, conv_only)', default=None)
     parser.add_argument('--gamestate', help='game state to load (so far only used in retro games)', default=None)
     parser.add_argument('--num_env', help='Number of environment copies being run in parallel. When not specified, set to number of cpus for Atari, and to 1 for Mujoco', default=None, type=int)
@@ -190,11 +191,11 @@ def common_arg_parser():
     parser.add_argument('--save_video_length', help='Length of recorded video. Default: 200', default=200, type=int)
     parser.add_argument('--log_path', help='Directory to save learning curve data.', default=None, type=str)
     parser.add_argument('--play', default=False, action='store_true')
-    parser.add_argument('--initial_vm_count', type=int, default=10)
-    parser.add_argument('--simulator_speedup', type=float, default=1.0)
+    parser.add_argument('--initial_vm_count', type=int, default=1)
+    parser.add_argument('--simulator_speedup', type=float, default=600.0) # with simulator speedup 1000 the task becomes too easy
     parser.add_argument('--test', default=False, action='store_true')
-    parser.add_argument('--workload_file', default=None, type=str)
-    parser.add_argument('--mips_per_core', default=None, type=int)
+    parser.add_argument('--workload_file', default="./TEST-DNNEVO-2.swf", type=str)
+    parser.add_argument('--mips_per_core', default=5000, type=int)#higher mips_per_core, easier task theoretically
     parser.add_argument('--continuous_mode', default=False, action='store_true')
     parser.add_argument('--evaluate_continuous_mode', default=False, action='store_true')
     parser.add_argument('--evaluate_mode', default=False, action='store_true')
@@ -204,11 +205,14 @@ def common_arg_parser():
     parser.add_argument('--initial_model', default=None, type=str)
     parser.add_argument('--initial_vm_count_no_data', default=None, type=int)
     parser.add_argument('--reindex_jobs', default=True, type=bool)
-    parser.add_argument('--algo', help='Algorithm', type=str, default='DQN')
+    parser.add_argument('--algo', help='Algorithm', type=str, default='PPO')
     parser.add_argument('--policy', help='Algorithm', type=str, default='MlpPolicy')
     parser.add_argument('--observation_history_length', help='observation_history_length', type=str, default='1')
-    parser.add_argument('--queue_wait_penalty', type=float, default=0.00001)
+    parser.add_argument('--queue_wait_penalty', type=float, default=0.0005)
+                        #default=0.00001)
     parser.add_argument('--n_steps', type=int, default=2048)
+    parser.add_argument('--model_name', type=str, default='')
+
     return parser
 
 def robotics_arg_parser():
