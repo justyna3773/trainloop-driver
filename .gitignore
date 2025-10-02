@@ -3,6 +3,13 @@ aws-creds
 output_model/**
 output_models/
 output_models_initial/
+output_malota/
+output_malota/**
+output_malota_initial/
+*.swf
+pictures/
+pictures/**
+runs/
 # initial_model/
 ignored/**
 .direnv

@@ -53,7 +53,7 @@ class AttentionVizCallback(BaseCallback):
         self._time_outer_sum = None   # (max_steps,max_steps)
         self._last_ts = 0
 
-        self.plot_heads = plot_heads
+        self.plot_heads = None
         self._H = None
         self._feat_head_sum = None          # (H,F,F)
         self._time_head_vec_sum = None      # (H,max_steps)

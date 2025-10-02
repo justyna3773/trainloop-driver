@@ -372,7 +372,7 @@ def train_model(env, args):
         policy_kwargs=policy_kwargs,
         n_steps=256, batch_size=256*3, n_epochs=10,
         #n_epochs=20, was 20 in first model
-        learning_rate=3e-4,
+        learning_rate=3e-5,
         gamma=0.99, gae_lambda=0.95,
         clip_range=0.2, 
         clip_range_vf=0.2,

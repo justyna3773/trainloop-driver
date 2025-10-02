@@ -41,6 +41,7 @@ ATTENTION=False
 GAWRL=True
 PCA=False
 PCA_OFFLINE=False
+THROUGHPUT=False
 submitted_jobs_cnt: int = 0
 oracle_update_url: str = os.getenv("ORACLE_UPDATE_URL",
                                    "http://oracle:8080/update")
@@ -147,8 +148,8 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
                 print(f"Best mean reward: {self.best_mean_reward:.2f} - Last mean reward per episode: {mean_reward:.2f}")
 
               # New best model, you could save the agent here
-              #if mean_reward > self.best_mean_reward:
-            self.best_mean_reward = mean_reward
+            if mean_reward > self.best_mean_reward:
+                self.best_mean_reward = mean_reward
             # Example for saving best model
             if self.verbose > 0:
                 print(f"Saving new best model to {self.save_path}")
@@ -174,11 +175,18 @@ def train(args,
     nsteps = int(args.n_steps)
     logger.info(model)
     # Create the callback: check every 1000 steps
-    callback = SaveOnBestTrainingRewardCallback(check_freq=100_000, log_dir=tensorboard_log, total_timesteps=total_timesteps, intermediate_models=4)
+    #callback = SaveOnBestTrainingRewardCallback(check_freq=100_000, log_dir=tensorboard_log, total_timesteps=total_timesteps, intermediate_models=4)
     if PCA:
         from pca import SPCAReweightCallback
+        FEATURE_NAMES = [ "vmAllocatedRatio",
+            "avgCPUUtilization",
+            "avgMemoryUtilization",
+            "p90MemoryUtilization",
+            "p90CPUUtilization",
+            "waitingJobsRatioGlobal",
+            "waitingJobsRatioRecent"]
         spca_cb = SPCAReweightCallback(
-        warmup_steps=0,                 # fit after first rollout
+        warmup_steps=100_000,                 # fit after first rollout
         min_fit_samples=256,            # need at least this many samples overall
         refit_every_rollouts=10,         # re-fit after every rollout (2048 steps here)
         max_history=100_000,               # or cap, e.g., 200_000
@@ -189,7 +197,7 @@ def train(args,
         assume_normalized_input=False,  # True if VecNormalize(obs=True)
         orig_metric_dim=7,
         verbose=1,
-        viz_dir=r"C:\path\to\spca_viz", # to save PNGs
+        viz_dir=r"C:\Users\ultramarine\Desktop\ppo_magisterka\trainloop_driver_official\trainloop_driver_final\trainloop-driver\output_malota", # to save PNGs
         feature_names=FEATURE_NAMES,
     )
 
@@ -206,7 +214,31 @@ def train(args,
             save_npz=False,
             make_plots_once=False,
         )
-        callback = [callback, attn_cb]
+        #callback = [callback, attn_cb]
+    if THROUGHPUT:
+        from utils import ThroughputCallback
+        throughput_cb = ThroughputCallback(verbose=1)
+        callback = throughput_cb
+        #[callback, throughput_cb]
+    if GAWRL:
+        #pass
+        from utils import FEATURE_NAMES, SaveOnBestTrainingRewardCallback
+
+        from attention_gawrl_callback import MeanAttentionVisualizationCallback, RolloutGatesVisualizationCallback, FilterMonitorCallback
+        mean_att_cb = MeanAttentionVisualizationCallback(feature_names=FEATURE_NAMES, verbose=1)
+        #mean_att_cb = FilterMonitorCallback(check_freq=10_000,top_k=4)
+        #mean_att_cb = RolloutGatesVisualizationCallback(feature_names=FEATURE_NAMES, verbose=1)
+        cb = SaveOnBestTrainingRewardCallback(check_freq=10_000,
+    log_dir="output_malota/",
+    total_timesteps=500_000,
+    intermediate_models=5,                      # or 0 to disable
+    milestones=[50_000, 100_000, 500_000],      # <-- your requested save points
+    verbose=1,
+    model_prefix="ppo_mlp"
+)
+            #buffer_size=50_000, log_freq=10_000, feature_names=FEATURE_NAMES, verbose=1)
+        callback = [mean_att_cb, cb]
+        # [callback, mean_att_cb]
     model.learn(total_timesteps=total_timesteps, callback=callback if use_callback else None)
     return model
 
@@ -293,6 +325,7 @@ def get_workload(args, extra_args):
 
 def build_env(args, extra_args):
     from utils import FeatureMaskWrapper
+    reduced_env = False
     alg = args.alg
     seed = int(args.seed)
     initial_vm_count = args.initial_vm_count
@@ -357,7 +390,7 @@ def build_env(args, extra_args):
                 env,
                 L=8,
                 #L=args.observation_history_length,
-                max_episode_steps=500,
+                max_episode_steps=1000,
                 clamp_obs=True,
             )
             return env
@@ -377,7 +410,7 @@ def build_env(args, extra_args):
     
     def custom_wrapper(env):
         env = TimeLimit(env, 
-            max_episode_steps=500, 
+            max_episode_steps=1000, 
             penalty=-0.1
             )
         if mask is not None:
@@ -385,9 +418,27 @@ def build_env(args, extra_args):
             env = FeatureMaskWrapper(
                 env,
                 mask=mask,
-                expose_raw=False          # <— only expose raw during eval
+                expose_raw=True          # <— only expose raw during eval
 
             )
+        elif reduced_env:
+            print('Using reduced env')
+            from utils import SelectMetricsWrapper
+            env = SelectMetricsWrapper(
+                env, [0,1,6])
+            from noisy_metrics import HardFakeMetricAugmentWrapper
+            # fake_specs = [
+            #     {"index":0,  "type":"mixture_beta", "params":{"weights":[0.6,0.4], "a":[2,8], "b":[5,2]}},
+            #     {"index":1,  "type":"ar1",          "params":{"rho":0.95, "sigma":0.03}},
+            #     {"index":9,  "type":"lagged_base",  "params":{"base_idx":0, "lag":5, "noise":0.05}},
+            #     {"index":10, "type":"linear_combo", "params":{"weights":[(1,0.4),(5,0.6)], "noise":0.05, "scale":4.0}},
+            #     {"index":11, "type":"seasonal",     "params":{"period":200, "amp":0.25, "noise":0.02}},
+            #     {"index":12, "type":"random_walk",  "params":{"sigma":0.02}},
+            #     {"index":13, "type":"reward_ema",   "params":{"alpha":0.05, "scale":0.5}},
+            #     {"index":14, "type":"beta",         "params":{"a":2.0, "b":2.0}},
+            # ]
+            # env = HardFakeMetricAugmentWrapper(env, fake_specs=fake_specs, seed=42)
+        print(env.observation_space)
         return env
 
     env = make_vec_env(env_id=env_id,
@@ -540,28 +591,64 @@ def build_dqn_model(AlgoClass, policy, tensorboard_log, env, args):
                      tensorboard_log=tensorboard_log)
 
 def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps, args):
+    import torch.nn as nn
+#     policy_kwargs = dict(
+#     net_arch=[dict(pi=[32, 32], vf=[32, 32])],
+#     activation_fn=nn.ReLU,
+#     ortho_init=True,
+# )
+    from utils import SmallCnnFor15xW
+    print("OBS SHAPE:", env.observation_space.shape)  # expect (C,H,W)
+    # policy_kwargs = dict(
+    #     features_extractor_class=SmallCnnFor15xW,
+    #     features_extractor_kwargs=dict(out_dim=128),   # pick 64/128/256 as you like
+    #     net_arch=[dict(pi=[64, 64], vf=[64, 64])],
+    #     activation_fn=nn.ReLU,
+    #     ortho_init=True,
+    # )
+    policy_kwargs = dict(
+    lstm_hidden_size=64, #decrease hidden size further to show that less metrics is better
+    #shared_lstm=True,
+    net_arch=[dict(pi=[32, 32], vf=[32, 32])],
+    activation_fn=nn.ReLU,
+    ortho_init=True,
+)
     return AlgoClass(policy=policy,
                      env=env,
-                     #n_steps=2048,
-                     n_steps=512,
-                     batch_size=512,
-                     learning_rate=0.0003,
-                     #2048 dla PPO, 2048*3
-                     #0.00003, # 0.00003 #for LSTM model I changed lr to 0.0003, #explained variance more stable for LSTM when 0.00003 than 0.0003, but still grows in the end
-                     #LSTM started learning with 0.0003 after 250k steps, incredibly slow
-
+                     #policy_kwargs=policy_kwargs,
+                     n_steps=2048,
+                    #  n_steps=512,
+                    #  batch_size=512,
+                    #n_steps=256,
+                    # batch_size=256*2,
+                    #batch_size=128,
+                     learning_rate=0.00003,
                      vf_coef=1,
-                     #clip_range_vf=10.0,
-                     clip_range_vf=1.0,
-
-                     #clip_range=0.2,
+                     clip_range_vf=10.0,
                      max_grad_norm=1,
                      gamma=0.95,
                      ent_coef=0.001,
                      clip_range=0.05,
                      verbose=1,
                      seed=int(args.seed),
+                     #policy_kwargs=policy_kwargs,
                      tensorboard_log=tensorboard_log)
+                     #2048 dla PPO, 2048*3
+                     #0.00003, # 0.00003 #for LSTM model I changed lr to 0.0003, #explained variance more stable for LSTM when 0.00003 than 0.0003, but still grows in the end
+                     #LSTM started learning with 0.0003 after 250k steps, incredibly slow
+
+                    #  vf_coef=1,
+                    #  #clip_range_vf=10.0,
+                    #  clip_range_vf=1.0,
+
+                    #  #clip_range=0.2,
+                    #  max_grad_norm=1,
+                    #  gamma=0.95,
+                    #  ent_coef=0.001,
+                    #  clip_range=0.05,
+                    #  verbose=1,
+                    #  seed=int(args.seed),
+                    #  tensorboard_log=tensorboard_log)
 
 def data_available(val):
     if val is not None:
@@ -579,7 +666,7 @@ def training_loop(args, extra_args):
     base_save_path = osp.expanduser(args.save_path)
     logger.log(f'Training loop: saving models in: {base_save_path}')
 
-    iteration_length_s = args.iteration_length_s
+    iteration_length_s = 300.0#args.iteration_length_s
     # global training start
     global_start = time.time()
     initial_timestamp = global_start if args.initial_timestamp < 0 else args.initial_timestamp
@@ -839,6 +926,11 @@ def training_once(args, extra_args):
     elif algo == 'PCA' and PCA:
         from pca import train_model
         model = train_model(env, args)
+    elif args.continue_training:
+        from stable_baselines3 import PPO
+        from sb3_contrib import RecurrentPPO
+        model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RecurrentPPO_128_32_Arch\recurrentppo_MlpLstmPolicy_mlplstm_policy_reduced_64_32', env=env)
+        print(f'Loaded model: {model}')
     else:
         model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps, args=args)
 
@@ -897,12 +989,20 @@ def training_once(args, extra_args):
         env.reset()
         num_env = args.num_env
         args.num_env = 1
-        if PCA:
+        if PCA_OFFLINE:
             extra_args['results'] = results
         env = build_env(args, extra_args)
         args.num_env = num_env
         new_policy_total_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions = test_model(model, env, n_runs=15)
-
+        if PCA:
+            from utils import evaluate
+            args.workload_file = 'TEST-DNNEVO.swf'
+            args.num_env = 1
+            env = build_env(args, extra_args)
+            mean_reward, observations, rewards, actions = evaluate(model, env)
+            print(f'Mean reward on DNNEVO test set: {mean_reward}')
+            evaluation_results = pd.DataFrame(list(zip(observations, rewards, actions)), columns = ['obs', 'rew', 'actions'])
+            evaluation_results.to_csv(f'/initial_model/eval_results/{model_name}.csv')
         print(rewards.shape)
         df = pd.DataFrame()
         df['reward'] = rewards_per_run
@@ -1145,13 +1245,15 @@ def main():
         # print("Return @ speedup=1  :", r1)
         # print("Return @ speedup=1000:", r2)
         from utils import evaluate_sample
-        #extra_args['feature_mask'] = [0,0,1,0,1,0,0]
+        #extra_args['feature_mask'] = [1,0,0,0,0,1,1]
         evaluate_sample(args, extra_args)
         #evaluate_sample(args, extra_args)
         return
     elif args.continuous_mode:
         training_loop(args, extra_args)
         return
+
+        
     else:
         training_once(args, extra_args)
     # if args.save_workload_mode:

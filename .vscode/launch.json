@@ -2,17 +2,21 @@
     // Use IntelliSense to learn about possible attributes.
     // Hover to view descriptions of existing attributes.
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    //"--test_mode", "True", "--workload_file", "TEST-DNNEVO.swf"],
     "version": "0.2.0",
     "configurations": [
 
+
         {
-            "name": "Debugpy Old: Current File with Arguments",
+            "name": "Debugpy Old: Current File",
             "type": "debugpy-old",
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["--env", "ThreeSizeAppEnv-v1", "--policy", "MlpPolicy", "--algo", "Attention", "--model_name", "mlp_malota", "--initial_vm_count", "1", "--queue_wait_penalty", "0.0005", "--num_timesteps", "50_000", "--simulator_speedup", "60.0"],
-            "justMyCode": true
+            "justMyCode": false,
+            "args": ["--env", "ThreeSizeAppEnv-v1", "--policy", "MlpPolicy", "--algo", "Attention", "--model_name", "mlp_gawrl", "--queue_wait_penalty", "0.0005", "--mips_per_core", "4400", "--workload_file", "TEST-DNNEVO-2.swf", "--simulator-speedup", "60.0", "--evaluate_mode", "True"]
+            //"--test_mode", "True", "--workload_file", "TEST-DNNEVO.swf"],
+            
         }
     ]
 }

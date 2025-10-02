@@ -283,7 +283,7 @@ class SPCAReweightCallback(BaseCallback):
         clip_weights: tuple = (0.25, 4.0),
         assume_normalized_input: bool = False,  # True if you use VecNormalize(obs=True)
         orig_metric_dim: int = 7,        # if obs is stacked (k*7), fit only on the last 7 per sample
-        verbose: int = 0,
+        verbose: int = 1,
         # Visualization:
         viz_dir: str = None,             # save PNGs here (optional)
         feature_names: list = None,      # labels for bars
@@ -459,13 +459,25 @@ class SPCAReweightCallback(BaseCallback):
         x = np.arange(len(w))
         fig, ax = plt.subplots(figsize=(6, 3.5))
         try:
-            ax.bar(x, w)
+            bars = ax.bar(x, w)
             ax.set_xticks(x)
             ax.set_xticklabels(names, rotation=30, ha="right")
             ax.set_ylim(0, max(4.0, float(w.max()) * 1.15))
             ax.set_ylabel("weight")
             ax.set_title(f"{kind} @ sample {step} (mean=1)")
             ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+            fig.subplots_adjust(bottom=0.3)
+            # 🔑 Add value labels on top of bars
+            for rect in bars:
+                height = rect.get_height()
+                ax.text(
+                    rect.get_x() + rect.get_width() / 2,
+                    height,
+                    f"{height:.2f}",   # format with 2 decimals
+                    ha="center",
+                    va="bottom",
+                    fontsize=8
+                )
 
             if _HAS_SB3_FIGURE:
                 self.logger.record("spca/weights_bar", Figure(fig, close=False),

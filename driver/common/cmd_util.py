@@ -24,7 +24,7 @@ def make_vec_env(env_id, env_type, num_env, seed,
                  wrapper_kwargs=None,
                  env_kwargs=None,
                  start_index=0,
-                 reward_scale=1.0,
+                 reward_scale=10.0,
                  flatten_dict_observations=True,
                  gamestate=None,
                  initializer=None,
@@ -69,7 +69,7 @@ def make_env(env_id,
              env_type,
              mpi_rank=0,
              subrank=0,
-             reward_scale=1.0,
+             reward_scale=10.0,
              gamestate=None,
              flatten_dict_observations=True,
              wrapper_kwargs=None,
@@ -212,6 +212,7 @@ def common_arg_parser():
                         #default=0.00001)
     parser.add_argument('--n_steps', type=int, default=2048)
     parser.add_argument('--model_name', type=str, default='')
+    parser.add_argument('--continue_training', default=False)
 
     return parser
 

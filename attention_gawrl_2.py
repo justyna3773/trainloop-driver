@@ -3965,22 +3965,89 @@ class GatingFirstCurriculum(BaseCallback):
 def train_model(env, args):
     from sb3_contrib import RecurrentPPO
     from stable_baselines3 import PPO
+    from attention_gawrl_gated import GatedFeatureExtractor
     #from src.attention_feature_selection import AttentionFeatureExtractor
     #policy_kwargs = dict(feature_extractor_class=AdaptiveAttentionFeatureExtractor)
     #with this strategy it is learning the fastest now, but will it be good?
+    #DIAGONAL
+    # policy_kwargs = dict(
+    #     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+    #     features_extractor_kwargs=dict(
+    #         d_embed=64, d_k=64, d_proj=64, n_heads=2,
+    #         qk_mode="hybrid", alpha_mode="mlp", alpha_init=0.3, learn_alpha=True,
+    #         mode="diagonal", attn_norm="diag_softmax",
+    #         use_posenc=True,      # keep simple early
+    #         attn_temp=0.9,
+    #         final_out_dim=64, out_layernorm=True, out_activation="relu",
+    #     ),
+    #     net_arch=[64, 64],      # <-- MLP layers after the extractor
+    #     activation_fn=nn.ReLU,    # or nn.ReLU
+    #     ortho_init=True,)
+    # policy_kwargs = dict(
+    # features_extractor_class=GatedFeatureExtractor,
+    # features_extractor_kwargs=dict(
+    #     d_embed=32, d_proj=16, gate_mode="hybrid", alpha_mode="mlp",
+    #     alpha_mlp_hidden=32, alpha_pool="mean", final_out_dim=32
+    # ),)
+#     from attention_gawrl_gated import SimpleFilterExtractor
+#     policy_kwargs = dict(
+#     features_extractor_class=SimpleFilterExtractor,
+#     features_extractor_kwargs=dict(
+#         filter_kwargs=dict(
+#             mode="l0",         # "sigmoid" for L1 or "l0" for Hard-Concrete
+#             hard=True,         # straight-through hard gates
+#             sample=True,       # sample during training
+#             tau_init=1.0,
+#             tau_min=0.1,
+#             lmbda=1e-3,        # sparsity strength (used in .regularization(); see note below)
+#         ),
+#     ),
+# )
+
+
+    #TODO next last working
     policy_kwargs = dict(
         features_extractor_class=AdaptiveAttentionFeatureExtractor,
         features_extractor_kwargs=dict(
-            d_embed=64, d_k=64, d_proj=64, n_heads=2,
+            d_embed=32, d_k=32, d_proj=32, n_heads=2,
             qk_mode="hybrid", alpha_mode="mlp", alpha_init=0.3, learn_alpha=True,
-            mode="generalized", attn_norm="row_softmax",
+            mode="diagonal", attn_norm="diag_softmax",
+            #mode="generalized", attn_norm="row_softmax",
             use_posenc=True,      # keep simple early
             attn_temp=0.9,
-            final_out_dim=64, out_layernorm=True, out_activation="relu",
+            final_out_dim=32, out_layernorm=True, out_activation="relu",
         ),
-        net_arch=[64, 64],      # <-- MLP layers after the extractor
+        net_arch=[32, 32],      # <-- MLP layers after the extractor
         activation_fn=nn.ReLU,    # or nn.ReLU
         ortho_init=True,)
+    #TODO last working
+    # policy_kwargs = dict(
+    #     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+    #     features_extractor_kwargs=dict(
+    #         d_embed=64, d_k=64, d_proj=64, n_heads=2,
+    #         qk_mode="hybrid", alpha_mode="mlp", alpha_init=0.3, learn_alpha=True,
+    #         mode="generalized", attn_norm="row_softmax",
+    #         use_posenc=True,      # keep simple early
+    #         attn_temp=0.9,
+    #         final_out_dim=64, out_layernorm=True, out_activation="relu",
+    #     ),
+    #     net_arch=[64, 64],      # <-- MLP layers after the extractor
+    #     activation_fn=nn.ReLU,    # or nn.ReLU
+    #     ortho_init=True,)
+
+    # policy_kwargs = dict(
+    #     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+    #     features_extractor_kwargs=dict(
+    #         d_embed=64, d_k=64, d_proj=64, n_heads=2,
+    #         qk_mode="hybrid", alpha_mode="mlp", alpha_init=0.3, learn_alpha=True,
+    #         mode="generalized", attn_norm="row_softmax",
+    #         use_posenc=True,      # keep simple early
+    #         attn_temp=0.9,
+    #         final_out_dim=64, out_layernorm=True, out_activation="relu",
+    #     ),
+    #     net_arch=[64, 64],      # <-- MLP layers after the extractor
+    #     activation_fn=nn.ReLU,    # or nn.ReLU
+    #     ortho_init=True,)
         # lstm_hidden_size=16,  # LSTM size
         # net_arch=[dict(pi=[], vf=[])],  # MLP layers
         # ortho_init=True) # orthogonal initialization
@@ -4032,21 +4099,40 @@ def train_model(env, args):
     model = PPO(
         "MlpPolicy",
         env,
-         policy_kwargs=dict(
+        policy_kwargs=dict(
                         **policy_kwargs,                      # keep your extractor etc.
                         optimizer_kwargs=dict(eps=1e-5),
                     ),
-                    n_steps=256,
-                    batch_size=256*3,                       # 32×8 per appendix
+                    n_steps=2048,
+                    # n_steps=256,
+                    # batch_size=256*3,                       # 32×8 per appendix
                     n_epochs=10,
-                    learning_rate=3e-4,                 # with linear schedule: pass a callable if you want decay
-                    gamma=0.99,
-                    gae_lambda=0.95,
-                    clip_range=0.2,
-                    clip_range_vf=0.2,                    # value clipping = policy ε
-                    vf_coef=0.5,
-                    ent_coef=0.01,
-                    max_grad_norm=0.5,
-                    verbose=1,
-                    tensorboard_log="./output_malota/gawrl_old",)
+                    learning_rate=0.00003,                 # with linear schedule: pass a callable if you want decay
+                    vf_coef=1,
+                     clip_range_vf=10.0,
+                     max_grad_norm=1,
+                     gamma=0.95,
+                     ent_coef=0.001,
+                     clip_range=0.05,
+                     verbose=1,
+                     seed=int(args.seed),
+                     #policy_kwargs=policy_kwargs,
+                     tensorboard_log="./output_malota/gawrl_old")
+        #  policy_kwargs=dict(
+        #                 **policy_kwargs,                      # keep your extractor etc.
+        #                 optimizer_kwargs=dict(eps=1e-5),
+        #             ),
+        #             n_steps=256,
+        #             batch_size=256*3,                       # 32×8 per appendix
+        #             n_epochs=10,
+        #             learning_rate=3e-4,                 # with linear schedule: pass a callable if you want decay
+        #             gamma=0.99,
+        #             gae_lambda=0.95,
+        #             clip_range=0.2,
+        #             clip_range_vf=0.2,                    # value clipping = policy ε
+        #             vf_coef=0.5,
+        #             ent_coef=0.01,
+        #             max_grad_norm=0.5,
+        #             verbose=1,
+        #             tensorboard_log="./output_malota/gawrl_old",)
     return model
