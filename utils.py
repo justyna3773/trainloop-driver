@@ -1,10 +1,18 @@
-FEATURE_NAMES = [ "vmAllocatedRatio",
-            "avgCPUUtilization",
-            "avgMemoryUtilization",
-            "p90MemoryUtilization",
-            "p90CPUUtilization",
-            "waitingJobsRatioGlobal",
-            "waitingJobsRatioRecent"]
+# FEATURE_NAMES = [ "vmAllocatedRatio",
+#             "avgCPUUtilization",
+#             "avgMemoryUtilization",
+#             "p90MemoryUtilization",
+#             "p90CPUUtilization",
+#             "waitingJobsRatioGlobal",
+#             "waitingJobsRatioRecent"]
+
+FEATURE_NAMES = ["vmAllocatedRatio",
+        "avgCPUUtilization",
+        "p90CPUUtilization",
+        "avgMemoryUtilization",
+        "p90MemoryUtilization",
+        "waitingJobsRatioGlobal",
+        "waitingJobsRatioRecent"]
 PCA_OFFLINE=False
 PCA=False
 
@@ -27,203 +35,7 @@ import numpy as np
 def _is_vec_env(env) -> bool:
     return hasattr(env, "num_envs") and hasattr(env, "step_async")
 
-def test_model_lstm(model, env, n_runs=6, deterministic=True):
-    """
-    Eval for SB3 policies (MlpPolicy, MlpLstmPolicy, etc.) on (Vec)Env.
-    Assumes a single-env VecEnv (num_envs==1) or a raw Gym env.
-    Returns the same tuple shape as your transformer test_model.
-    """
-    is_vec = _is_vec_env(env)
-    if is_vec and getattr(env, "num_envs", 1) != 1:
-        raise ValueError(f"Evaluate with a single-env VecEnv. Got num_envs={env.num_envs}.")
 
-    # If using VecNormalize, disable updates and de-normalize rewards
-    if hasattr(env, "training"):
-        env.training = False
-    if hasattr(env, "norm_reward"):
-        env.norm_reward = False
-
-    all_obs_7 = []                 # we will try to extract a (7,) if possible; else store None
-    all_actions = []
-    ep_rewards_per_run, ep_lengths = [], []
-    ep_rewards_list, ep_obs_per_run_7 = [], []
-
-    state = None
-    for _ in range(n_runs):
-        if is_vec:
-            obs = env.reset()
-            episode_start = np.array([True], dtype=bool)
-        else:
-            obs = env.reset()
-            episode_start = None
-
-        ep_rew, ep_len = 0.0, 0
-        rewards_run, obs_run_7 = [], []
-
-        done = False
-        while not done:
-            # SB3 recurrent-friendly predict
-            try:
-                action, state = model.predict(
-                    obs, state=state, episode_start=episode_start, deterministic=deterministic
-                )
-            except TypeError:
-                # Older SB3 signature
-                action, state = model.predict(obs, state=state, deterministic=deterministic)
-
-            if is_vec:
-                obs, rews, dones, infos = env.step(action)
-                rew = float(rews[0])
-                done = bool(dones[0])
-                episode_start = dones
-            else:
-                obs, rew, done, info = env.step(action)
-                rew = float(rew)
-
-            # Try to extract a (7,) vector if obs is a Dict with 'h'
-            if isinstance(obs, dict) and "h" in obs:
-                h = np.asarray(obs["h"], dtype=np.float32)
-                h = h[0] if (h.ndim == 2 and h.shape[0] == 1) else h
-                if h.shape == (7,):
-                    all_obs_7.append(h)
-                    obs_run_7.append(h)
-                else:
-                    all_obs_7.append(None)
-            else:
-                all_obs_7.append(None)
-
-            all_actions.append(action)
-            ep_rew += rew
-            rewards_run.append(rew)
-            ep_len += 1
-
-            if done:
-                break
-
-        ep_rewards_per_run.append(ep_rew)
-        ep_lengths.append(ep_len)
-        ep_rewards_list.append(np.asarray(rewards_run, dtype=np.float32))
-        ep_obs_per_run_7.append(np.stack(obs_run_7, axis=0) if len(obs_run_7) > 0 else np.zeros((0,7), np.float32))
-
-        state = None
-        if is_vec:
-            episode_start = np.array([True], dtype=bool)
-
-    mean_episode_reward = float(np.mean(ep_rewards_per_run)) if ep_rewards_per_run else 0.0
-    print(f"Mean reward over {n_runs} runs: {mean_episode_reward:.6f}")
-
-    # pack to match the transformer function’s return signature
-    observations = np.asarray([x for x in all_obs_7 if x is not None], dtype=np.float32)
-    if observations.size > 0:
-        observations = observations[:, None, :]   # (x, 1, 7)
-    else:
-        observations = np.zeros((0,1,7), dtype=np.float32)
-
-    episode_lengths = np.asarray(ep_lengths, dtype=np.int32)
-    episode_rewards = np.asarray(ep_rewards_list, dtype=object)
-    episode_rewards_per_run = np.asarray(ep_rewards_per_run, dtype=np.float32)
-    observations_per_run = np.asarray(ep_obs_per_run_7, dtype=object)
-    actions = np.asarray(all_actions, dtype=object)
-
-    return (mean_episode_reward, observations, episode_lengths,
-            episode_rewards, episode_rewards_per_run, observations_per_run, actions)
-
-#TODO this is basic evaluate function
-def evaluate_backup(model, env, n_episodes=15, deterministic=False, freeze_vecnorm=True):
-    # keep VecNormalize reward semantics = true env reward
-    if hasattr(env, "norm_reward"): env.norm_reward = False
-    if freeze_vecnorm and hasattr(env, "training"): env.training = False
-
-    is_vec = hasattr(env, "num_envs")
-    if is_vec and env.num_envs != 1:
-        raise ValueError("Use a single-env VecEnv for eval.")
-
-    state = None
-    ep_returns = []
-    observations = []
-    actions = []
-
-    for _ in range(n_episodes):
-        obs = env.reset()
-        episode_start = np.array([True], bool) if is_vec else None
-        done = False; ret = 0.0 
-        while not done:
-            try:
-                action, state = model.predict(obs, state=state,
-                                              episode_start=episode_start,
-                                              deterministic=deterministic)
-            except TypeError:
-                action, state = model.predict(obs, state=state,
-                                              deterministic=deterministic)
-            if is_vec:
-                obs, r, d, info = env.step(action)
-                observations.append(obs)
-                actions.append(action)
-                r = float(r[0]); done = bool(d[0]); episode_start = d
-            else:
-                obs, r, done, info = env.step(action)
-                observations.append(obs)
-                actions.append(action)
-            ret += float(r)
-        ep_returns.append(ret)
-        state = None
-    return float(np.mean(ep_returns)), observations, ep_returns, actions
-
-#TODO last backup function that I was using
-def evaluate_backup(model, env, n_episodes=15, deterministic=False,
-             freeze_vecnorm=True, collect_info=True):
-    # keep VecNormalize reward semantics = true env reward
-    if hasattr(env, "norm_reward"): env.norm_reward = False
-    if freeze_vecnorm and hasattr(env, "training"): env.training = False
-
-    is_vec = hasattr(env, "num_envs")
-    if is_vec and env.num_envs != 1:
-        raise ValueError("Use a single-env VecEnv for eval.")
-
-    state = None
-    ep_returns, observations, actions = [], [], []
-    raw_obs_trace, raw_metrics_trace = [], []  # <— new
-
-    for _ in range(n_episodes):
-        obs = env.reset()
-        episode_start = np.array([True], bool) if is_vec else None
-        done = False; ret = 0.0
-
-        while not done:
-            try:
-                action, state = model.predict(
-                    obs, state=state, episode_start=episode_start,
-                    deterministic=deterministic)
-            except TypeError:
-                action, state = model.predict(
-                    obs, state=state, deterministic=deterministic)
-
-            if is_vec:
-                obs, r, d, info = env.step(action)
-                observations.append(obs); actions.append(action)
-                r = float(r[0]); done = bool(d[0]); episode_start = d
-                if collect_info:
-                    i0 = info[0] if isinstance(info, (list, tuple)) else info
-                    raw_obs_trace.append(i0.get("_raw_obs"))
-                    raw_metrics_trace.append(i0.get("_raw_metrics"))
-            else:
-                obs, r, done, info = env.step(action)
-                observations.append(obs); actions.append(action)
-                if collect_info:
-                    raw_obs_trace.append(info.get("_raw_obs"))
-                    raw_metrics_trace.append(info.get("_raw_metrics"))
-
-            ret += float(r)
-
-        ep_returns.append(ret)
-        state = None
-
-    mean_return = float(np.mean(ep_returns)) if ep_returns else 0.0
-    if collect_info:
-        return mean_return, raw_obs_trace, ep_returns, actions
-    else:
-        return mean_return, observations, ep_returns, actions
-import numpy as np
 
 def _scalar(x):
     # Convert reward to a Python float
@@ -351,23 +163,74 @@ def evaluate_sample(args, extra_args):
                         
             if policy=='MlpLstmPolicy':
                 #model = RecurrentPPO.load(rf'C:\initial_model\historic\recurrentppo\MlpLstmPolicy\recurrentppo_MlplstmPolicy')
+                #SPCA
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\SPCA\pca_MlpLstmPolicy_spca_recurrent', env=env)
+                #model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RecurrentPPO_14\recurrentppo_MlpLstmPolicy_mlplstm_policy_reduced', env=env)
                 #model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RecurrentPPO_19_worst\recurrentppo_MlpLstmPolicy_mlplstm_policy_worst', env=env)
-                model = RecurrentPPO.load(path=rf'C:\initial_model\{algo.lower()}\{policy}\{algo.lower()}_{policy}')
+                #model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RANDOM\BASELINE\recurrentppo_MlpLstmPolicy_mlplstm_all_metrics')
+                #model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RANDOM\random_1_16_RecurrentPPO_62\recurrentppo_MlpLstmPolicy_mlplstm_zbior1', env=env)
+                #model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RANDOM\random_2_16_RecurrentPPO_48\recurrentppo_MlpLstmPolicy_mlplstm_random_2_16', env=env)
+                #model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RANDOM\random_3_16_RecurrentPPO_50\recurrentppo_MlpLstmPolicy_mlplstm_random_3_16', env=env)
+                #model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RANDOM\random_4_16_RecurrentPPO_58\recurrentppo_MlpLstmPolicy_mlplstm_random_4', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\random_5_16_RecurrentPPO_64\recurrentppo_MlpLstmPolicy_mlplstm_zbior4_powtorka.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MANUAL\vmallocated_avgcpu_recurrentppo_82\recurrentppo_MlpLstmPolicy_mlplstm_vm_avgcpu.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\ATTENTTION\vm_global_avgcpu_recurrentppo_96\recurrentppo_MlpLstmPolicy_mlplstm_attn_top_3.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\ATTENTTION\vm_recent_avgcpu_recurrentppo_97\recurrentppo_MlpLstmPolicy_mlplstm_attn_top_3.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MANUAL\vmallocated_p90mem_recurrentppo_83\recurrentppo_MlpLstmPolicy_mlplstm_vm_p90mem', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MANUAL\p90mem_p90cpu_recurrentppo_87\recurrentppo_MlpLstmPolicy_mlplstm_p90cpu_p90mem.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MANUAL\recent_avgcpu_recurrentppo_89\recurrentppo_MlpLstmPolicy_mlplstm_recent_avgcpu.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MANUAL\SET2_recurrentppo_91\recurrentppo_MlpLstmPolicy_mlplstm_manual_2.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\RETRAINING\recurrentppo_108_0_1_5_2\recurrentppo_MlpLstmPolicy_mlplstm_4_top_ig.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\RETRAINING\recurrentppo_107_0_1_5_6\recurrentppo_MlpLstmPolicy_mlplstm_4_top_spca_attention.zip', env=env)
+                #model = RecurrentPPO.load(path=rf'C:\initial_model\{algo.lower()}\{policy}\{algo.lower()}_{policy}')
                 #                                     env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\BASELINE\arch_64_64\recurrentppo_MlpLstmPolicy_mlplstm_full_model.zip', env=env)
+
+                #TODO manual choice
+                #worst
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MANUAL\recurrentppo_119_2_3_4_worst\recurrentppo_MlpLstmPolicy_mlplstm_bottom_3.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MANUAL\SET2_recurrentppo_91\recurrentppo_MlpLstmPolicy_mlplstm_manual_2.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\SYNTHETIC\2_3_4_700_tys\recurrentppo_MlpLstmPolicy_mlplstm_bottom_3_synthetic.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MANUAL\recurrentppo_119_2_3_4_worst\recurrentppo_MlpLstmPolicy_mlplstm_bottom_3.zip', env=env) 
+                #set 2
+                #model = RecurrentPPO.load(r'c:\initial_model\recurrentppo\MlpLstmPolicy\recurrentppo_MlpLstmPolicy_mlplstm_manual_2.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\PPO_32_avgcpu_waitingglobal_vm\ppo_MlpPolicy_mlp_avgcpu.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\ATTENTTION\vm_recent_avgcpu\recurrentppo_MlpLstmPolicy_mlplstm_attn_top_3.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\BASELINE\arch_256_100_000\ppo_mlp_intermediate_00_100000.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\RETRAINING\recurrentppo_109_110_0_5\recurrentppo_MlpLstmPolicy_mlplstm_4_top_2_attn.zip', env=env)
+                #TODO synthetic
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\SYNTHETIC\0_1_5_6_200_tys\smaller_arch_recurrentppo_106\recurrentppo_MlpLstmPolicy_mlplstm_baseline_synthetic.zip', env=env)
+
+                #TODO automatic choice final experiments
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\PICKED_METRICS\0_1_2_3_5_recurrentppo_157\recurrentppo_MlpLstmPolicy_mlplstm_0_1_2_3_5.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\PICKED_METRICS\0_1_2_recurrentppo_155\recurrentppo_MlpLstmPolicy_mlplstm_vm_avgcpu_p90cpu.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\PICKED_METRICS\3_4_6_recurrentppp_156\recurrentppo_MlpLstmPolicy_mlplstm_avgmem_p90mem_waitingrecent.zip', env=env)
+
+                #TODO attention
+                model=RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\FINAL_MODELS\RETRAINING\0_1_2_5_recurrentppo_196\recurrentppo_MlpLstmPolicy_mlplstm_0_1_2_5.zip', env=env)
+                #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\ATTENTION\recurrentppo_171_0_00007\attention_MlpLstmPolicy_mlplstm_att_tunedtolstm.zip', env=env)
+                pass
             elif PCA:
                 pass   
             else:
-                model = PPO.load(path=rf'C:\initial_model\{algo.lower()}\{policy}\{model_name}',env=env)
+                pass
+                #pass
+                #model = PPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\RETRAINING\ppo_153_0_1_2\ppo_MlpPolicy_mlp_0_1_2.zip', env=env)
+                #model = PPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\RETRAINING\ppo_152_0_1_5\ppo_MlpPolicy_mlp_0_1_5.zip', env=env)
+                #model = PPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\RETRAINING\ppo_151_0_1\ppo_MlpPolicy_mlp_0_1.zip', env=env)
+                #model = PPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\RETRAINING\ppo_154_2_3_4\ppo_MlpPolicy_mlp_2_3_4.zip', env=env)
+
+
+                #model = PPO.load(path=rf'C:\initial_model\{algo.lower()}\{policy}\{model_name}',env=env)
+                #model = PPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\MLP\0_1_2_ppo_145\ppo_MlpPolicy_mlp_0_1_2.zip', env=env)
                 #model = PPO.load(path=rf'C:\Users\ultramarine\Desktop\ppo_magisterka\trainloop_driver_official\trainloop_driver_final\trainloop-driver\output_malota\ppo_mlp_intermediate_02_300000',env=env)
                 #model = PPO.load(path=r'C:\Users\ultramarine\Desktop\ppo_magisterka\trainloop_driver_official\trainloop_driver_final\trainloop-driver\output_malota\ppo_gawrl_intermediate_02_300000', env=env)
                 #model = PPO.load(r'C:\initial_model\historic_synthetic_dnnevo\PPO_43_baseline\ppo_MlpPolicy_mlp_vm_waiting', env=env)
                 
             env.reset()
             #mean_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions  = test_model(model, env, n_runs=10)
-            if PCA_OFFLINE:
-                mean_reward, observations = evaluate_pca(model, env)
-            else:
-                mean_reward, observations, rewards, actions = evaluate(model, env, n_episodes=10)
+            
+            mean_reward, observations, rewards, actions = evaluate(model, env, n_episodes=10)
             print(f'Mean episode reward from correct eval: {mean_reward}')
 
             with open(rf'C:\initial_model\ppo\MlpPolicy\observations_{algo.lower()}_{policy}_{args.observation_history_length}.npy', 'wb') as f:
@@ -385,97 +248,7 @@ def evaluate_sample(args, extra_args):
     env.close()
     print('Evaluation ended')
 
-#TODO this is extended evaluate function for PCA_OFFLINE
-import numpy as np
-from stable_baselines3.common.vec_env import VecEnv, VecEnvWrapper, VecNormalize
-def _freeze_vecnormalize_anywhere(env, enable=True):
-    if not enable: return
-    cur = env
-    seen = set()
-    # unwrap VecEnv wrappers
-    while isinstance(cur, VecEnvWrapper) and id(cur) not in seen:
-        seen.add(id(cur))
-        if isinstance(cur, VecNormalize):
-            cur.training = False
-            cur.norm_reward = False   # ensure TRUE rewards at eval
-        cur = cur.venv
-    # handle base case
-    if isinstance(cur, VecNormalize):
-        cur.training = False
-        cur.norm_reward = False
-def evaluate_pca(model, env, n_episodes=15, deterministic=True, freeze_vecnorm=True, collect_raw=True):
-    _freeze_vecnormalize_anywhere(env, enable=freeze_vecnorm)
-    is_vec = isinstance(env, VecEnv) or hasattr(env, "num_envs")
-    if is_vec and getattr(env, "num_envs", 1) != 1:
-        raise ValueError("Use a single-env VecEnv (num_envs=1) for eval.")
 
-    state = None
-    ep_returns = []
-    observations = []  # will store raw pre-PCA if collect_raw=True else projected obs
-
-    for _ in range(n_episodes):
-        obs = env.reset()  # projected obs (PCA) if PCA wrapper is active
-
-        # try to grab the initial *raw* obs saved by the PCA wrapper on reset
-        if collect_raw:
-            try:
-                # VecEnv path (PCAVecObsWrapper): attribute lives on the wrapper; get_attr returns [value]
-                initial_raw = env.get_attr("_last_raw_obs")[0] if is_vec else getattr(env, "_last_raw_obs", None)
-                if initial_raw is not None:
-                    observations.append(np.asarray(initial_raw).copy())
-            except Exception:
-                pass  # if not present, we’ll just start collecting from first step
-
-        episode_start = np.array([True], dtype=bool) if is_vec else None
-        done = False
-        ret = 0.0
-
-        while not done:
-            # always pass the PCA/projected obs to the model
-            try:
-                action, state = model.predict(
-                    obs, state=state, episode_start=episode_start, deterministic=deterministic
-                )
-            except TypeError:
-                action, state = model.predict(obs, state=state, deterministic=deterministic)
-
-            step_out = env.step(action)
-
-            # Gymnasium 5-tuple vs Gym 4-tuple handling
-            if len(step_out) == 5:
-                obs_next, r, terminated, truncated, info = step_out
-                d = terminated or truncated
-            else:
-                obs_next, r, d, info = step_out
-
-            # Collect raw obs without disturbing what the model sees next
-            if collect_raw:
-                if is_vec:
-                    # SB3 VecEnv: info is a list of dicts
-                    raw = info[0].get("raw_obs") if isinstance(info, (list, tuple)) and info else None
-                else:
-                    raw = info.get("raw_obs") if isinstance(info, dict) else None
-                observations.append(np.asarray(raw).copy() if raw is not None else np.asarray(obs_next).copy())
-            else:
-                observations.append(np.asarray(obs_next).copy())
-
-            # Prepare for next step
-            if is_vec:
-                r_val = float(np.asarray(r).reshape(-1)[0])
-                d_val = bool(np.asarray(d).reshape(-1)[0])
-                episode_start = np.asarray([d_val], dtype=bool)
-            else:
-                r_val = float(r)
-                d_val = bool(d)
-
-            ret += r_val
-            done = d_val
-            obs = obs_next  # keep feeding PCA/projected obs to the model
-
-        ep_returns.append(ret)
-        state = None
-
-    return float(np.mean(ep_returns)), observations
 
 
 def run_episode(env, policy_fn):
@@ -489,56 +262,6 @@ def run_episode(env, policy_fn):
             return ep_ret
 
 
-import numpy as np
-import gym
-from gym import spaces
-# utils.py
-import gym
-import numpy as np
-
-#TODO last correct working FeatureMaskWrapper
-class FeatureMaskWrapper_backup(gym.Wrapper):
-    """
-    Masks observations for the agent, but exposes the original, unmasked values
-    via `info["_raw_obs"]` (and optionally `info["_raw_metrics"]`) on step().
-    Set expose_raw=True only for eval to keep training light.
-    """
-    def __init__(self, env, mask, expose_raw=False, raw_metrics_fn=None):
-        super().__init__(env)
-        self.mask = np.asarray(mask, dtype=bool)
-        self.expose_raw = expose_raw
-        self.raw_metrics_fn = raw_metrics_fn  # callable: raw_obs -> dict
-
-    def _apply_mask(self, obs):
-        obs = np.asarray(obs, dtype=np.float32)
-        masked = obs.copy()
-        masked[~self.mask] = 0.0
-        return masked
-
-    # Old Gym API (as used in your code): reset() returns obs only
-    # If you later switch to Gymnasium, add the (obs, info) path.
-    def reset(self, **kwargs):
-        obs = self.env.reset(**kwargs)
-        return self._apply_mask(obs)
-
-    def step(self, action):
-        obs, reward, done, info = self.env.step(action)
-        raw_obs = np.asarray(obs, dtype=np.float32)
-        masked_obs = self._apply_mask(raw_obs)
-
-        if self.expose_raw:
-            # make sure we can attach fields even if info is a specialized mapping
-            info = dict(info) if info is not None else {}
-            info["_raw_obs"] = raw_obs
-            if self.raw_metrics_fn is not None:
-                # compute whatever "original metrics" you want from the raw obs
-                info["_raw_metrics"] = self.raw_metrics_fn(raw_obs)
-
-        return masked_obs, reward, done, info
-
-# FeatureMaskWrapper: zero out features along the LAST dimension, keep shape.
-# Example: obs (1, 15, 7) + mask [1,1,0,0,0,0,1] -> output still (1, 15, 7),
-# but features 2..5 are always zero.
 
 from typing import Optional, Callable
 import numpy as np
@@ -745,97 +468,6 @@ class SelectMetricsWrapper(gym.ObservationWrapper):
 # SelectMetricsWrapper: keep only chosen metrics along the LAST dimension.
 # Works with shapes like (7,), (1, 15, 7), (8, 7), etc.
 
-from typing import Iterable, Optional, Sequence
-import numpy as np
-
-try:
-    import gymnasium as gym
-    from gymnasium import spaces
-except ImportError:
-    import gym
-    from gym import spaces
-
-
-class SelectMetricsWrapper_backup(gym.ObservationWrapper):
-    """
-    Keep only metrics at selected indices (or mask) along the LAST axis.
-    Examples:
-      - obs (1, 15, 7) + mask [1,1,0,0,0,0,1] -> (1, 15, 3)
-      - obs (1, 8, 20)  + indices [0,3,7]     -> (1, 8, 3)
-    """
-
-    def __init__(
-        self,
-        env: gym.Env,
-        metric_idxs: Optional[Iterable[int]] = None,
-        mask: Optional[Sequence[int]] = None,
-        output_dtype: Optional[np.dtype] = None,
-    ):
-        super().__init__(env)
-        if not isinstance(env.observation_space, spaces.Box):
-            raise TypeError("SelectMetricsWrapper supports only Box observation spaces.")
-        if env.observation_space.shape is None or len(env.observation_space.shape) < 1:
-            raise ValueError("Observation space must be at least 1-D.")
-
-        self._pre_shape = tuple(env.observation_space.shape)
-        self._feat_dim = int(self._pre_shape[-1])
-
-        # Build selected indices from mask or metric_idxs
-        if metric_idxs is not None and mask is not None:
-            raise ValueError("Provide either 'metric_idxs' or 'mask', not both.")
-
-        if mask is not None:
-            mask = np.asarray(mask, dtype=int).ravel()
-            if mask.size != self._feat_dim:
-                raise ValueError(f"Mask length {mask.size} != feature dim {self._feat_dim}.")
-            sel = np.flatnonzero(mask != 0)
-        elif metric_idxs is not None:
-            sel = np.unique(np.asarray(list(metric_idxs), dtype=np.int64))
-        else:
-            raise ValueError("You must provide 'metric_idxs' or 'mask'.")
-
-        if sel.size == 0:
-            raise ValueError("No features selected.")
-        if sel.min() < 0 or sel.max() >= self._feat_dim:
-            raise IndexError(f"indices must be in [0, {self._feat_dim-1}]")
-
-        self.metric_idxs = sel.astype(np.int64)
-        self.output_dtype = output_dtype or env.observation_space.dtype
-
-        # Prepare low/high; handle scalar bounds by broadcasting to obs shape
-        low = env.observation_space.low
-        high = env.observation_space.high
-
-        if np.isscalar(low) and np.isscalar(high):
-            low_arr = np.full(self._pre_shape, low, dtype=np.float32)
-            high_arr = np.full(self._pre_shape, high, dtype=np.float32)
-        else:
-            low_arr = np.asarray(low, dtype=np.float32)
-            high_arr = np.asarray(high, dtype=np.float32)
-
-        # Slice bounds along the last axis
-        new_low = np.take(low_arr, self.metric_idxs, axis=-1)
-        new_high = np.take(high_arr, self.metric_idxs, axis=-1)
-        self._post_shape = tuple(self._pre_shape[:-1] + (self.metric_idxs.size,))
-
-        # Sanity check shapes
-        assert tuple(new_low.shape) == self._post_shape and tuple(new_high.shape) == self._post_shape, \
-            f"Bound shapes mismatch: got {new_low.shape}, {new_high.shape}, expected {self._post_shape}"
-
-        self.observation_space = spaces.Box(low=new_low, high=new_high, dtype=self.output_dtype)
-
-    @property
-    def selected_indices(self):
-        return self.metric_idxs.tolist()
-
-    def observation(self, obs):
-        # Slice runtime observation along the last axis
-        out = np.take(np.asarray(obs), self.metric_idxs, axis=-1)
-        return out.astype(self.output_dtype, copy=False)
-
-# NoisyMetricAugmentWrapper
-# Inserts per-step random features in [0,1] at user-chosen indices of the FINAL vector.
-# Base features keep their original order and occupy the remaining indices.
 
 from typing import Iterable, List, Optional, Tuple
 import numpy as np

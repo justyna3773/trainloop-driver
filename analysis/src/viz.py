@@ -12,7 +12,7 @@ from matplotlib.pyplot import axis, figure
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from numpy import ndarray
 
-from utils import Utils
+from analysis.src.utils import Utils
 try:
     from IPython.display import display, HTML
 

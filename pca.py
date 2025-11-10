@@ -553,15 +553,22 @@ def train_model(env, args):
         features_extractor_class=SPCAReweightingExtractor,
         features_extractor_kwargs=dict(
             standardize=not use_vecnorm
-        )
+        ), 
+        lstm_hidden_size=64, #decrease hidden size further to show that less metrics is better
+    #shared_lstm=True,
+    net_arch=[dict(pi=[16, 16], vf=[16, 16])],
+    activation_fn=nn.ReLU,
+    ortho_init=True,
     )
 
-    model = PPO(
-        "MlpPolicy",                 # or "MlpLstmPolicy" with RecurrentPPO
+    model = RecurrentPPO(
+        "MlpLstmPolicy",                 # or "MlpLstmPolicy" with RecurrentPPO
         env,
         policy_kwargs=policy_kwargs,
         learning_rate=0.00003,
-        n_steps=2048,
+        n_steps=256,
+        batch_size=256,
+        #n_steps=2048,
         #0.00003, # 0.00003 #for LSTM model I changed lr to 0.0003, #explained variance more stable for LSTM when 0.00003 than 0.0003, but still grows in the end
         #LSTM started learning with 0.0003 after 250k steps, incredibly slow
 

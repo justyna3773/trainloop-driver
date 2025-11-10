@@ -1,10 +1,10 @@
 import matplotlib.pyplot as plt
 plt.style.use('seaborn-deep')
-from utils import Utils
+from analysis.src.utils import Utils
 import numpy as np
 import pandas as pd
 from captum.attr import visualization as viz
-from viz import visualize_image_attr_multiple
+from analysis.src.viz import visualize_image_attr_multiple
 
 
 POSITIVE_VALUE_COLOR = 'seagreen'
@@ -83,8 +83,10 @@ def plot_mean_attributions_per_action(mean_attributions, action_names=Utils.ACTI
 def plot_mean_attributions(mean_attributions, action_names=Utils.ACTION_NAMES, feature_names=Utils.FEATURE_NAMES, policy='mlp', abs=False, title_postfix=''):
     if policy == 'mlp':
         if abs:
+            #plt.figure(figsize=(10, 1.5))
             plt.figure(figsize=(10, 1.5))
-            plt.title(f'Absolute mean attributions - Feature Importance' + title_postfix)
+            
+            plt.title(f'Ważność cech - średnie bezwzględne atrybucje' + title_postfix)
             mean_attributions = np.abs(mean_attributions)
             df = pd.DataFrame(mean_attributions, columns=feature_names)
             mean_attributions = df.mean(axis=0).sort_values(ascending=False)
@@ -94,7 +96,7 @@ def plot_mean_attributions(mean_attributions, action_names=Utils.ACTION_NAMES, f
         else:
             x_axis_data = list(range(len(feature_names)))
             plt.figure(figsize=(10, 1.5))
-            plt.title(f'Mean attributions' + title_postfix)
+            plt.title(f'Średnie atrybucje' + title_postfix)
             plt.xticks(x_axis_data, feature_names, rotation=30)
             # plt.ylim([-1, 1])
             color = []
@@ -126,7 +128,7 @@ def plot_mean_attributions(mean_attributions, action_names=Utils.ACTION_NAMES, f
                                                 methods=["blended_heat_map"],
                                                 signs=["absolute_value"],
                                                 show_colorbar=True,
-                                                titles=['Absolute mean attributions'],
+                                                titles=['Średnie bezwzględne atrybucje'],
                                                 fig_size=fig_size,
                                                 use_pyplot=True,
                                             )

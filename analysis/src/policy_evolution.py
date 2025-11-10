@@ -1,5 +1,5 @@
 from typing import Optional
-from drl_agent_interpreter import DRLAgentInterpreter
+from analysis.src.drl_agent_interpreter import DRLAgentInterpreter
 
 class PolicyEvolution:
     def __init__(self,

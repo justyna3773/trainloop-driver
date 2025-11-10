@@ -1,793 +1,834 @@
-# transformer_policy_sb3.py
-from typing import Dict, Optional, Tuple
-
-import numpy as np
-import torch
+import torch as th
 import torch.nn as nn
-from gym import spaces
-from einops import rearrange
-
+import torch.nn.functional as F
+from collections import deque
+from typing import Optional
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3 import PPO
+from gym import spaces
 
-
-# ---------- Your building blocks (kept intact, with tiny safe guards) ----------
-
-class MultiHeadAttention(nn.Module):
-    """Multi Head Attention without dropout."""
-    def __init__(self, embed_dim, num_heads):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_size = embed_dim // num_heads
-        assert self.head_size * num_heads == embed_dim, \
-            "Embedding dimension must be divisible by num_heads"
-
-        self.values = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.keys = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.queries = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.fc_out = nn.Linear(embed_dim, embed_dim)
-
-    def forward(self, values, keys, queries, mask):
-        # values/keys/queries: (N, L, D); mask: (N, L) with True/1 = keep, False/0 = mask-out
-        N = queries.shape[0]
-        value_len, key_len, query_len = values.shape[1], keys.shape[1], queries.shape[1]
-
-        values = self.values(values)
-        keys = self.keys(keys)
-        queries = self.queries(queries)
-
-        values  = values.reshape(N, value_len, self.num_heads, self.head_size)
-        keys    = keys.reshape(N, key_len, self.num_heads, self.head_size)
-        queries = queries.reshape(N, query_len, self.num_heads, self.head_size)
-
-        # (N, heads, q_len, k_len)
-        energy = torch.einsum("nqhd,nkhd->nhqk", [queries, keys])
-
-        if mask is not None:
-            # mask True->keep, False->-inf
-            energy = energy.masked_fill(mask.unsqueeze(1).unsqueeze(1) == 0, float("-1e20"))
-
-        # NOTE: canonical scaling is sqrt(head_size); your code used sqrt(embed_dim).
-        attention = torch.softmax(energy / (self.embed_dim ** 0.5), dim=3)
-
-        out = torch.einsum("nhqk,nkhd->nqhd", [attention, values]).reshape(
-            N, query_len, self.num_heads * self.head_size
-        )
-        out = self.fc_out(out)
-        return out, attention
-
-
-class GRUGate(nn.Module):
-    """GRU-style gating used in GTrXL."""
-    def __init__(self, input_dim: int, bg: float = 0.0):
-        super().__init__()
-        self.Wr = nn.Linear(input_dim, input_dim, bias=False)
-        self.Ur = nn.Linear(input_dim, input_dim, bias=False)
-        self.Wz = nn.Linear(input_dim, input_dim, bias=False)
-        self.Uz = nn.Linear(input_dim, input_dim, bias=False)
-        self.Wg = nn.Linear(input_dim, input_dim, bias=False)
-        self.Ug = nn.Linear(input_dim, input_dim, bias=False)
-        self.bg = nn.Parameter(torch.full([input_dim], bg))
-        self.sigmoid = nn.Sigmoid()
-        self.tanh = nn.Tanh()
-        nn.init.xavier_uniform_(self.Wr.weight)
-        nn.init.xavier_uniform_(self.Ur.weight)
-        nn.init.xavier_uniform_(self.Wz.weight)
-        nn.init.xavier_uniform_(self.Uz.weight)
-        nn.init.xavier_uniform_(self.Wg.weight)
-        nn.init.xavier_uniform_(self.Ug.weight)
-
-    def forward(self, x: torch.Tensor, y: torch.Tensor):
-        r = self.sigmoid(self.Wr(y) + self.Ur(x))
-        z = self.sigmoid(self.Wz(y) + self.Uz(x) - self.bg)
-        h = self.tanh(self.Wg(y) + self.Ug(torch.mul(r, x)))
-        return torch.mul(1 - z, x) + torch.mul(z, h)
-
-
-class SinusoidalPosition(nn.Module):
-    """Relative positional encoding"""
-    def __init__(self, dim, min_timescale=2., max_timescale=1e4):
-        super().__init__()
-        # Keep frequency count to half so sin/cos concat -> dim
-        half = dim // 2
-        freqs = torch.arange(0, half, dtype=torch.float32)
-        inv_freqs = max_timescale ** (-freqs / half)
-        self.register_buffer('inv_freqs', inv_freqs)
-
-    def forward(self, seq_len):
-        # descending distances: [L-1, L-2, ..., 0]
-        seq = torch.arange(seq_len - 1, -1, -1.0, device=self.inv_freqs.device) # now ascending distances
-        sinusoidal_inp = rearrange(seq, 'n -> n ()') * rearrange(self.inv_freqs, 'd -> () d')
-        pos_emb = torch.cat((sinusoidal_inp.sin(), sinusoidal_inp.cos()), dim=-1)
-        return pos_emb  # (L, dim)
-
-
-class TransformerBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, config: Dict):
-        super().__init__()
-        self.attention = MultiHeadAttention(embed_dim, num_heads)
-
-        self.use_gtrxl = config.get("gtrxl", False)
-        if self.use_gtrxl:
-            self.gate1 = GRUGate(embed_dim, config.get("gtrxl_bias", 0.0))
-            self.gate2 = GRUGate(embed_dim, config.get("gtrxl_bias", 0.0))
-
-        self.layer_norm = config.get("layer_norm", "pre")  # "pre" | "post"
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
-        if self.layer_norm == "pre":
-            self.norm_kv = nn.LayerNorm(embed_dim)
-
-        self.fc = nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.ReLU())
-
-    def forward(self, value, key, query, mask):
-        # value/key/query: (N, L, D) except query can be (N, 1, D)
-        if self.layer_norm == "pre":
-            query_ = self.norm1(query)
-            value = self.norm_kv(value)
-            key = value
-        else:
-            query_ = query
-
-        attention, attn_w = self.attention(value, key, query_, mask)
-
-        if self.use_gtrxl:
-            h = self.gate1(query, attention)
-        else:
-            h = attention + query
-
-        if self.layer_norm == "post":
-            h = self.norm1(h)
-
-        h_ = self.norm2(h) if self.layer_norm == "pre" else h
-        forward = self.fc(h_)
-
-        if self.use_gtrxl:
-            out = self.gate2(h, forward)
-        else:
-            out = forward + h
-
-        if self.layer_norm == "post":
-            out = self.norm2(out)
-
-        return out, attn_w
-
-
-class Transformer(nn.Module):
+class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
     """
-    Transformer encoder w/o dropout. Positional encoding can be 'relative', 'learned', or '' (none).
+    Attentive AWRL Feature Extractor (feature mixing, RecurrentPPO/MlpLstmPolicy-ready).
+
+    Key points:
+      - Output is the SAME size as the input feature vector (N) unless `final_out_dim` is set.
+      - Computes an attention matrix A in R^{N x N} (multi-head, content/index/hybrid),
+        then mixes RAW inputs: y = A x  (optionally y <- x + w * A x).
+      - Exposes two importance diagnostics per step (shape [B,N]):
+          * metric_importance : attention-only view (from A)
+          * contrib_importance: contribution-aware importance ~ sum_i |A_{i,j} x_j| (recommended)
+
+    Supported obs shapes:
+      - [B, N]
+      - [T, B, N]
+      - [T, B, S, N]   (extra history axis S; reduced inside)
+
+    qk_mode:
+      - "content":  q,k from current content embeddings -> state-dependent attention
+      - "index":    q,k are learned per-index vectors   -> state-agnostic prior
+      - "hybrid":   q,k = α * qk_content + (1-α) * qk_index
+
+    alpha_mode (hybrid only):
+      - "global": single scalar α (learnable if learn_alpha=True)
+      - "mlp":    α(s) predicted from current state embeddings (mean/max pool)
+
+    Multi-head:
+      - n_heads, d_k, head_agg ("mean" | "sum" | "max")
+
+    LSTM helpers:
+      - final_out_dim: optional linear compression from N -> final_out_dim for the policy
+      - out_layernorm, out_activation: "tanh" | "relu" | None
     """
-    def __init__(self, config, input_dim, max_episode_steps: int):
-        super().__init__()
-        self.config = config
-        self.num_blocks = config["num_blocks"]
-        self.embed_dim = config["embed_dim"]
-        self.num_heads = config["num_heads"]
-        self.max_episode_steps = max_episode_steps
-        self.activation = nn.ReLU()
 
-        self.linear_embedding = nn.Linear(input_dim, self.embed_dim)
-        nn.init.orthogonal_(self.linear_embedding.weight, np.sqrt(2))
-
-        pe_type = config.get("positional_encoding", "relative")
-        if pe_type == "relative":
-            self.pos_embedding = SinusoidalPosition(dim=self.embed_dim)
-        elif pe_type == "learned":
-            self.pos_embedding = nn.Parameter(
-                torch.randn(self.max_episode_steps, self.embed_dim)
-            )
-        else:
-            self.pos_embedding = None
-
-        self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(self.embed_dim, self.num_heads, config)
-            for _ in range(self.num_blocks)
-        ])
-
-    def forward(
+    def __init__(
         self,
-        h: torch.Tensor,                  # (N, input_dim)
-        memories: torch.Tensor,           # (N, L, num_blocks, D)
-        mask: Optional[torch.Tensor],     # (N, L) bool/0-1
-        memory_indices: Optional[torch.Tensor]  # (N, L) long
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # embed current token
-        h = self.activation(self.linear_embedding(h))  # (N, D)
+        observation_space: spaces.Box,
+        d_embed: int = 32,
+        d_k: int = 16,                    # per-head dim for Q/K
+        n_heads: int = 1,
+        head_agg: str = "mean",
+        mode: str = "generalized",        # "generalized" | "diagonal"
+        attn_norm: str = "row_softmax",   # "row_softmax" | "diag_softmax" | "none"
+        attn_temp: float = 1.0,
+        qk_mode: str = "content",         # "content" | "index" | "hybrid"
+        use_posenc: bool = True,
+        use_content_embed: bool = False,  # if False, Q/K still come from a simple (non-learned) projection of raw values
+        alpha_init: float = 0.5,
+        learn_alpha: bool = True,
 
-        # add positional encodings to memory (value/key) streams if configured
-        if self.pos_embedding is not None:
-            if isinstance(self.pos_embedding, nn.Parameter):  # learned (max_steps, D)
-                pe = self.pos_embedding[memory_indices]  # (N, L, D)
-            else:  # relative sinusoidal
-                pe_all = self.pos_embedding(self.max_episode_steps)  # (max_steps, D)
-                pe = pe_all[memory_indices]  # (N, L, D)
-            memories = memories + pe.unsqueeze(2)  # (N, L, num_blocks, D)
+        # state-dependent alpha options (hybrid only)
+        alpha_mode: str = "global",       # "global" | "mlp"
+        alpha_mlp_hidden: int = 32,
+        alpha_pool: str = "mean",         # "mean" | "max"
 
-        # run through blocks
-        out_memories = []
-        x = h
-        for i, block in enumerate(self.transformer_blocks):
-            out_memories.append(x.detach())
-            # block args: value, key, query, mask
-            v = memories[:, :, i]           # (N, L, D)
-            x, _att = block(v, v, x.unsqueeze(1), mask)  # -> (N, 1, D)
-            x = x.squeeze(1)                # (N, D)
-        return x, torch.stack(out_memories, dim=1)  # (N, D), (N, num_blocks, D)
+        # reduce strategy for history axis S when obs is [T,B,S,N]
+        history_reduce: str = "mean",     # "mean" | "last" | "max"
 
+        # LSTM-friendly output head
+        final_out_dim: Optional[int] = None,   # default = N
+        out_layernorm: bool = False,
+        out_activation: Optional[str] = "tanh",
 
-# ---------- SB3 Features Extractor ----------
+        # Mixing tweaks
+        use_residual: bool = False,        # y <- x + residual_weight * (A x)
+        residual_weight: float = 1.0,
 
-class TransformerFeaturesExtractor(BaseFeaturesExtractor):
-    """
-    SB3 features extractor that expects a Dict observation with:
-      - 'h': (input_dim,)
-      - 'memories': (L, num_blocks, embed_dim)
-      - 'mask': (L,)  (bool/0-1)
-      - 'memory_indices': (L,)  (long)
-    and outputs a (embed_dim,) feature vector per sample.
-    """
-    def __init__(self, observation_space: spaces.Dict, config: dict, max_episode_steps: int):
-        assert isinstance(observation_space, spaces.Dict)
-        input_dim = observation_space.spaces["h"].shape[0]   # <-- auto-detect
-        super().__init__(observation_space, features_dim=config["embed_dim"])
-        self.config = config
-        self.max_episode_steps = max_episode_steps
-        self.input_dim = input_dim
-        self.transformer = Transformer(config, input_dim, max_episode_steps)
+        # Misc
+        freeze: bool = False,
+    ):
+        n_metrics = int(observation_space.shape[-1])
 
-    # in transformer_policy_sb3.py -> class TransformerFeaturesExtractor.forward(...)
-    def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
-        h = observations["h"].float()                     # (N, input_dim)
-        memories = observations["memories"]               # (N, L, input_dim)  OR  (N, L, num_blocks, D)
-        mask = observations["mask"]                       # (N, L)
-        
-        memory_indices = observations["memory_indices"].long()   # absolute times from wrapper
-        current_index  = observations["current_index"].long()    # absolute time of current step
+        # basic dims
+        self.n_metrics = n_metrics
+        self.d_embed = int(d_embed)
+        self.d_k = int(d_k)
+        self.n_heads = int(n_heads)
+        assert self.n_heads >= 1, "n_heads must be >= 1"
+        self.head_agg = str(head_agg).lower()
+        assert self.head_agg in {"mean", "sum", "max"}
 
-        if mask.dtype != torch.bool:
-            mask = mask != 0
+        # raw (pre-optional compression) output is just N
+        self._raw_out_dim = self.n_metrics
 
-        # ---- NEW: accept raw memories and embed + broadcast across blocks ----
-        # Accept shapes:
-        #   (N, L, input_dim) -> embed -> (N, L, num_blocks, D)
-        #   (N, L, D)         -> expand  -> (N, L, num_blocks, D)
-        #   (N, L, num_blocks, D)        -> use as is
-        if memories.dim() == 4:
-            # already (N, L, num_blocks, D)
-            pass
-        elif memories.dim() == 3:
-            N, L, last = memories.shape
-            if last == self.input_dim:
-                # raw -> embed with the SAME transformer embedding (consistency!)
-                mem_flat = memories.reshape(-1, self.input_dim).float()
-                mem_emb = torch.relu(self.transformer.linear_embedding(mem_flat))
-                mem_emb = mem_emb.view(N, L, self.transformer.embed_dim)
-                memories = mem_emb.unsqueeze(2).expand(-1, -1, self.transformer.num_blocks, -1)
-            elif last == self.transformer.embed_dim:
-                # already embedded -> just broadcast across blocks
-                memories = memories.unsqueeze(2).expand(-1, -1, self.transformer.num_blocks, -1)
+        # decide final features_dim exposed to the policy/LSTM
+        self.final_out_dim = int(final_out_dim) if final_out_dim is not None else self._raw_out_dim
+        super().__init__(observation_space, features_dim=self.final_out_dim)
+
+        # config
+        self.mode = mode.lower()
+        self.attn_norm = attn_norm.lower()
+        self.attn_temp = float(attn_temp)
+        self.qk_mode = qk_mode.lower()
+        assert self.qk_mode in {"content", "index", "hybrid"}
+        assert self.mode in {"generalized", "diagonal"}
+        assert self.attn_norm in {"row_softmax", "diag_softmax", "none"}
+        self.use_posenc = bool(use_posenc)
+        self.use_content_embed = bool(use_content_embed)
+        self.history_reduce = history_reduce.lower()
+        assert self.history_reduce in {"mean", "last", "max"}
+
+        self.use_residual = bool(use_residual)
+        self.residual_weight = float(residual_weight)
+
+        # Content embedders (for Q/K creation)
+        if self.use_content_embed:
+            self.embedders = nn.ModuleList([nn.Linear(1, self.d_embed) for _ in range(self.n_metrics)])
+        else:
+            self.embedders = None
+            # Non-learned projection of raw scalars to d_embed for Q/K (broadcast)
+            self.register_buffer("value_projection", th.ones(1, self.d_embed))
+
+        #self.ln_e = nn.LayerNorm(self.d_embed)
+        self.ln_e = nn.Identity()
+
+        # Optional positional encoding (index)
+        self.P_idx = nn.Parameter(th.randn(self.n_metrics, self.d_embed) * 0.02) if self.use_posenc else None
+
+        # Q/K projections to heads
+        self.Wq_c = nn.Linear(self.d_embed, self.n_heads * self.d_k, bias=False)
+        self.Wk_c = nn.Linear(self.d_embed, self.n_heads * self.d_k, bias=False)
+
+        # Index Q/K parameters per head: [H, N, d_k]
+        self.Q_idx = nn.Parameter(th.randn(self.n_heads, self.n_metrics, self.d_k) * 0.02)
+        self.K_idx = nn.Parameter(th.randn(self.n_heads, self.n_metrics, self.d_k) * 0.02)
+
+        # Hybrid α (global or MLP)
+        self.alpha_mode = alpha_mode.lower()
+        self.alpha_init = float(alpha_init)
+        self._alpha_last = self.alpha_init
+
+        if self.qk_mode == "hybrid":
+            if self.alpha_mode == "global":
+                self.alpha_param = nn.Parameter(th.tensor(self.alpha_init)) if learn_alpha else None
+                self.alpha_pool = None
+                self.alpha_mlp = None
+            elif self.alpha_mode == "mlp":
+                self.alpha_param = None
+                self.alpha_pool = alpha_pool.lower()
+                assert self.alpha_pool in {"mean", "max"}
+                self.alpha_mlp = nn.Sequential(
+                    nn.LayerNorm(self.d_embed),
+                    nn.Linear(self.d_embed, int(alpha_mlp_hidden)),
+                    nn.ReLU(),
+                    nn.Linear(int(alpha_mlp_hidden), 1),
+                )
             else:
-                raise AssertionError(f"Unrecognized memories last dim {last}")
+                raise ValueError("alpha_mode must be 'global' or 'mlp'")
         else:
-            raise AssertionError(f"Unrecognized memories ndim {memories.dim()}")
+            self.alpha_param = None
+            self.alpha_pool = None
+            self.alpha_mlp = None
 
-        #x, _ = self.transformer(h.float(), memories.float(), mask, memory_indices)
-               # --- KEY FIX: use distances (how many steps ago) ---
-        distances = current_index.unsqueeze(1) - memory_indices   # (N, L)
-        distances = distances.clamp(min=0, max=self.max_episode_steps - 1)
-
-        x, _ = self.transformer(h.float(), memories.float(), mask, distances)
-        return x
-
-# transformer_obs_wrapper_generic.py
-from collections import deque
-import numpy as np
-import gym
-from gym import spaces
-# transformer_obs_wrapper_generic.py
-from collections import deque
-from typing import Deque, Optional, Tuple, Dict, Any
-
-
-
-class TransformerObsWrapper(gym.Wrapper):
-    """
-    Wrap a 1D Box-observation env to emit a Dict observation for the Transformer extractor.
-    - 'h': current obs (same bounds/dtype as base env)
-    - 'memories': last L obs (same bounds; zero-padded at episode start)
-    - 'mask': which memory slots are valid
-    - 'memory_indices': absolute timestep index of each memory token
-    - 'current_index': absolute timestep index of the *current* token (for distance PE)
-
-    Works with Gym (4-return step / 1-return reset) and Gymnasium (5-return step / 2-return reset).
-    """
-
-    def __init__(
-        self,
-        env: gym.Env,
-        L: int = 64,
-        max_episode_steps: int = 1000,
-        clamp_obs: bool = True,   # clip incoming obs to base low/high
-    ):
-        super().__init__(env)
-
-        # Validate base observation space
-        base_space = env.observation_space
-        assert isinstance(base_space, spaces.Box), "Base obs must be a Box"
-        assert len(base_space.shape) == 1, "Expect 1D feature vector"
-        self.input_dim = base_space.shape[0]
-        self.dtype = np.float32 if base_space.dtype is None else base_space.dtype
-
-        # Cache base low/high (may be arrays)
-        self.base_low = np.asarray(base_space.low, dtype=self.dtype)
-        self.base_high = np.asarray(base_space.high, dtype=self.dtype)
-
-        self.L = L
-        self.max_episode_steps = max_episode_steps
-        self.clamp_obs = clamp_obs
-
-        # Rolling buffers
-        self.mem: Deque[np.ndarray] = deque(maxlen=L)
-        self.idx: Deque[int] = deque(maxlen=L)
-        self.t = 0
-        self._last_h: Optional[np.ndarray] = None
-
-        # Build Dict observation space with *matching* bounds for h/memories
-        mem_low = np.broadcast_to(self.base_low, (L, self.input_dim)).astype(self.dtype)
-        mem_high = np.broadcast_to(self.base_high, (L, self.input_dim)).astype(self.dtype)
-
-        self.observation_space = spaces.Dict({
-            "h": spaces.Box(self.base_low, self.base_high, shape=(self.input_dim,), dtype=self.dtype),
-            "memories": spaces.Box(mem_low, mem_high, shape=(L, self.input_dim), dtype=self.dtype),
-            "mask": spaces.MultiBinary(L),
-            "memory_indices": spaces.Box(low=0, high=max_episode_steps - 1, shape=(L,), dtype=np.int64),
-            "current_index": spaces.Box(low=0, high=max_episode_steps - 1, shape=(), dtype=np.int64),
-        })
-
-    # ---------- helpers ----------
-
-    def _sanitize_obs(self, obs: np.ndarray) -> np.ndarray:
-        obs = np.asarray(obs, dtype=self.dtype)
-        if self.clamp_obs:
-            # clip to base env bounds (for your env this is [0,1])
-            obs = np.minimum(np.maximum(obs, self.base_low), self.base_high)
-        return obs
-
-    def _dict_obs(self, h_now: np.ndarray) -> Dict[str, np.ndarray]:
-        L, D = self.L, self.input_dim
-        mems = np.zeros((L, D), dtype=self.dtype)
-        mask = np.zeros((L,), dtype=np.int8)
-        idxs = np.zeros((L,), dtype=np.int64)
-
-        n = len(self.mem)
-        if n > 0:
-            mems[-n:] = np.stack(self.mem, axis=0)
-            mask[-n:] = 1
-            idxs[-n:] = np.fromiter(self.idx, dtype=np.int64, count=n)
-
-        return {
-            "h": h_now.astype(self.dtype, copy=False),
-            "memories": mems,
-            "mask": mask,
-            "memory_indices": idxs,          # absolute time of each memory token
-            "current_index": np.int64(self.t),
-        }
-
-    # ---------- reset / step (Gym + Gymnasium) ----------
-
-    def reset(self, **kwargs):
-        base = self.env.reset(**kwargs)
-
-        if isinstance(base, tuple):   # Gymnasium: (obs, info)
-            obs, info = base
-        else:                         # Old Gym: obs only
-            obs, info = base, {}
-
-        obs = self._sanitize_obs(obs)
-
-        self.mem.clear(); self.idx.clear()
-        self.t = 0
-        self._last_h = obs.copy()
-
-        out = self._dict_obs(obs)
-        return (out, info) if isinstance(base, tuple) else out
-
-    def step(self, action):
-        base = self.env.step(action)
-
-        if len(base) == 5:  # Gymnasium
-            obs, reward, terminated, truncated, info = base
-            done_out = (terminated, truncated)
-        elif len(base) == 4:  # Old Gym
-            obs, reward, done, info = base
-            terminated, truncated = done, False
-            done_out = (terminated or truncated,)
+        # Post head (optional compression/activation for LSTM interface)
+        self.out_layernorm = bool(out_layernorm)
+        self.out_activation = (None if out_activation is None else str(out_activation).lower())
+        post = []
+        if self.final_out_dim != self._raw_out_dim:
+            post.append(nn.LayerNorm(self._raw_out_dim))
+            post.append(nn.Linear(self._raw_out_dim, self.final_out_dim))
+            if self.out_activation == "tanh":
+                post.append(nn.Tanh())
+            elif self.out_activation == "relu":
+                post.append(nn.ReLU())
+            self.post_proj = nn.Sequential(*post)
+            self.out_ln = None
+            self.out_act = None
         else:
-            raise RuntimeError(f"Unexpected step() return length: {len(base)}")
+            self.post_proj = None
+            self.out_ln = nn.LayerNorm(self._raw_out_dim) if self.out_layernorm else None
+            if self.out_activation == "tanh":
+                self.out_act = nn.Tanh()
+            elif self.out_activation == "relu":
+                self.out_act = nn.ReLU()
+            else:
+                self.out_act = None
 
-        obs = self._sanitize_obs(obs)
+        # Diagnostics
+        self.attn_matrix: Optional[th.Tensor] = None          # [B,N,N] aggregated over heads
+        self.metric_importance: Optional[th.Tensor] = None    # [B,N] attention-only
+        self.contrib_importance: Optional[th.Tensor] = None   # [B,N] contribution-aware (|x_j| * sum_i |A_{i,j}|)
 
-        # push previous h into memory
-        if self._last_h is not None:
-            self.mem.append(self._last_h)
-            self.idx.append(self.t)
+        # History
+        self.attn_history = deque(maxlen=1000)      # mean over batch of metric_importance
+        self.contrib_history = deque(maxlen=1000)   # mean over batch of contrib_importance
+        self.total_steps = 0
 
-        self.t += 1
-        self._last_h = obs.copy()
+        if freeze:
+            for p in self.parameters():
+                p.requires_grad = False
 
-        out = self._dict_obs(obs)
+    # ----------------- helpers -----------------
 
-        if len(base) == 5:
-            return out, reward, terminated, truncated, info
+    def _apply_posenc(self, E: th.Tensor) -> th.Tensor:
+        # E: [B,N,d_embed]
+        if self.P_idx is not None:
+            E = E + self.P_idx.view(1, self.n_metrics, self.d_embed)
+        return self.ln_e(E)
+
+    def _alpha_value(self, E_for_qk: th.Tensor) -> th.Tensor:
+        """
+        Returns α as [B,1,1,1] for broadcasting with [B,H,N,d_k]
+        """
+        B = E_for_qk.size(0)
+        if self.qk_mode != "hybrid":
+            self._alpha_last = 1.0
+            return th.ones(B, 1, 1, 1, device=E_for_qk.device)
+
+        if self.alpha_mode == "global":
+            if self.alpha_param is not None:
+                a = th.sigmoid(self.alpha_param)  # scalar learnable
+            else:
+                a = th.tensor(self.alpha_init, device=E_for_qk.device)
+            a_b = a.view(1, 1, 1, 1).expand(B, 1, 1, 1)
         else:
-            return out, reward, done_out[0], info
+            pooled = E_for_qk.amax(dim=1) if (self.alpha_pool == "max") else E_for_qk.mean(dim=1)  # [B,d_embed]
+            a_scalar = th.sigmoid(self.alpha_mlp(pooled))  # [B,1]
+            a_b = a_scalar.view(B, 1, 1, 1)
+        self._alpha_last = float(a_b.mean().detach().item())
+        return a_b
 
+    def _compute_A_scores(self, E: th.Tensor):
+        """
+        Return raw (pre-temp) scores:
+          - content     : [B,H,N,N]
+          - index       : [H,N,N] (then broadcast to [B,H,N,N] later)
+          - hybrid      : [B,H,N,N]
+        """
+        B, N, _ = E.shape
+        H = self.n_heads
+        dk = self.d_k
 
+        E_for_qk = self._apply_posenc(E)  # [B,N,d_embed]
 
-# ---------- (Optional) Thin policy wrapper ----------
-class TransformerPolicy(ActorCriticPolicy):
-    """
-    Thin convenience wrapper so you can do:
-        PPO(TransformerPolicy, env, policy_kwargs={...})
-    Otherwise you can just use MultiInputPolicy with the same policy_kwargs.
-    """
-    def __init__(
-        self,
-        observation_space: spaces.Space,
-        action_space: spaces.Space,
-        lr_schedule,
-        transformer_config: Dict,
-        input_dim: int,
-        max_episode_steps: int,
-        **kwargs,
-    ):
-        policy_kwargs = dict(
-            features_extractor_class=TransformerFeaturesExtractor,
-            features_extractor_kwargs=dict(
-                config=transformer_config,
-                input_dim=input_dim,
-                max_episode_steps=max_episode_steps,
-            ),
-        )
-        # merge user kwargs (net_arch, activation_fn, etc.)
-        policy_kwargs.update(kwargs.get("policy_kwargs", {}))
-        kwargs["features_extractor_class"] = policy_kwargs["features_extractor_class"]
-        kwargs["features_extractor_kwargs"] = policy_kwargs["features_extractor_kwargs"]
-        super().__init__(observation_space, action_space, lr_schedule, **kwargs)
+        if self.qk_mode == "content":
+            q = self.Wq_c(E_for_qk).view(B, N, H, dk).permute(0, 2, 1, 3)  # [B,H,N,dk]
+            k = self.Wk_c(E_for_qk).view(B, N, H, dk).permute(0, 2, 1, 3)  # [B,H,N,dk]
+            S = th.matmul(q, k.transpose(-2, -1)) / (dk ** 0.5)            # [B,H,N,N]
+            return S
 
-# cartpole_transformer_wrapper.py
-from collections import deque
-from typing import Deque, Tuple, Dict, Any, Optional
+        if self.qk_mode == "index":
+            q_i = self.Q_idx   # [H,N,dk]
+            k_i = self.K_idx   # [H,N,dk]
+            S = th.matmul(q_i, k_i.transpose(-2, -1)) / (dk ** 0.5)        # [H,N,N]
+            return S
 
-import gym
-import numpy as np
-from gym import spaces
+        # hybrid
+        q_c = self.Wq_c(E_for_qk).view(B, N, H, dk).permute(0, 2, 1, 3)    # [B,H,N,dk]
+        k_c = self.Wk_c(E_for_qk).view(B, N, H, dk).permute(0, 2, 1, 3)    # [B,H,N,dk]
+        q_i = self.Q_idx.unsqueeze(0).expand(B, -1, -1, -1)                # [B,H,N,dk]
+        k_i = self.K_idx.unsqueeze(0).expand(B, -1, -1, -1)                # [B,H,N,dk]
+        alpha = self._alpha_value(E_for_qk)                                 # [B,1,1,1]
+        q = alpha * q_c + (1.0 - alpha) * q_i
+        k = alpha * k_c + (1.0 - alpha) * k_i
+        S = th.matmul(q, k.transpose(-2, -1)) / (dk ** 0.5)                 # [B,H,N,N]
+        return S
 
+    def _normalize_A_heads(self, scores: th.Tensor, B: int) -> th.Tensor:
+        """
+        Normalize per head and return A_heads: [B,H,N,N]
+        """
+        H = self.n_heads
+        N = self.n_metrics
 
-# cartpole_transformer_wrapper_compat.py
-from collections import deque
-from typing import Deque, Dict, Optional, Tuple, Any, Union
+        # index-only may give [H,N,N]
+        if self.qk_mode == "index" and scores.dim() == 3:
+            S = scores / max(1e-6, self.attn_temp)                          # [H,N,N]
+            if self.mode == "diagonal":
+                diag_logits = th.diagonal(S, dim1=-2, dim2=-1)              # [H,N]
+                if self.attn_norm == "diag_softmax":
+                    w = F.softmax(diag_logits, dim=-1)                      # [H,N]
+                elif self.attn_norm == "none":
+                    w = diag_logits
+                else:
+                    w = F.softmax(diag_logits, dim=-1)
+                A_heads = th.diag_embed(w)                                  # [H,N,N]
+            else:
+                if self.attn_norm == "row_softmax":
+                    A_heads = F.softmax(S, dim=-1)                          # [H,N,N]
+                elif self.attn_norm == "diag_softmax":
+                    d = F.softmax(th.diagonal(S, dim1=-2, dim2=-1), dim=-1) # [H,N]
+                    A_heads = S.clone()
+                    A_heads = A_heads - th.diag_embed(th.diagonal(A_heads, dim1=-2, dim2=-1)) + th.diag_embed(d)
+                else:
+                    A_heads = S
+            return A_heads.unsqueeze(0).expand(B, -1, -1, -1)               # [B,H,N,N]
 
-import gym # works with both gym and gymnasium imports; if you're on old gym, alias is fine
-import numpy as np
-from gym import spaces
-
-
-class CartPoleTransformerObsWrapper(gym.Wrapper):
-    """
-    Version-agnostic wrapper that:
-      - Emits a Dict observation with keys: h, memories, mask, memory_indices
-      - Mirrors the base env's return signatures (old Gym or Gymnasium).
-      - Keeps a rolling window of *past* observations as memory.
-    """
-
-    def __init__(
-        self,
-        env: gym.Env,
-        L: int = 64,
-        input_dim: int = 4,                 # CartPole obs dim
-        max_episode_steps: Optional[int] = None,
-    ):
-        super().__init__(env)
-        assert isinstance(env.observation_space, spaces.Box)
-        assert env.observation_space.shape == (input_dim,)
-
-        self.input_dim = input_dim
-        self.L = L
-        self.max_episode_steps = (
-            max_episode_steps
-            if max_episode_steps is not None
-            else (env.spec.max_episode_steps if getattr(env, "spec", None) and env.spec and env.spec.max_episode_steps else 1000)
-        )
-
-        # rolling buffers
-        self.mem_buf: Deque[np.ndarray] = deque(maxlen=L)
-        self.idx_buf: Deque[int] = deque(maxlen=L)
-        self.t = 0
-        self._last_h: Optional[np.ndarray] = None
-
-        # Expose Dict observation space to SB3
-        self.observation_space = spaces.Dict(
-            {
-                "h": spaces.Box(low=-np.inf, high=np.inf, shape=(input_dim,), dtype=np.float32),
-                "memories": spaces.Box(low=-np.inf, high=np.inf, shape=(L, input_dim), dtype=np.float32),
-                "mask": spaces.MultiBinary(L),
-                "memory_indices": spaces.Box(low=0, high=self.max_episode_steps - 1, shape=(L,), dtype=np.int64),
-            }
-        )
-
-    # ---------- helpers ----------
-
-    def _dict_obs(self, h_now: np.ndarray) -> Dict[str, np.ndarray]:
-        mems = np.zeros((self.L, self.input_dim), dtype=np.float32)
-        mask = np.zeros((self.L,), dtype=np.int8)
-        idxs = np.zeros((self.L,), dtype=np.int64)
-
-        n = len(self.mem_buf)
-        if n > 0:
-            mems[-n:] = np.stack(list(self.mem_buf), axis=0)
-            mask[-n:] = 1
-            idxs[-n:] = np.fromiter(self.idx_buf, dtype=np.int64, count=n)
-
-        return {
-            "h": h_now.astype(np.float32, copy=False),
-            "memories": mems,
-            "mask": mask,
-            "memory_indices": idxs,
-        }
-
-    # ---------- reset / step (compatible with both APIs) ----------
-
-    def reset(self, **kwargs):
-        base = self.env.reset(**kwargs)
-
-        # Normalize base to (obs, info)
-        if isinstance(base, tuple):
-            obs, info = base
-        else:  # old Gym
-            obs, info = base, {}
-
-        # Reset buffers
-        self.mem_buf.clear()
-        self.idx_buf.clear()
-        self.t = 0
-        self._last_h = np.array(obs, dtype=np.float32, copy=True)
-
-        dict_obs = self._dict_obs(h_now=obs)
-
-        # Mirror the base signature
-        return (dict_obs, info) if isinstance(base, tuple) else dict_obs
-
-    def step(self, action):
-        base = self.env.step(action)
-
-        # Handle 5-return (Gymnasium) or 4-return (old Gym)
-        if len(base) == 5:
-            obs, reward, terminated, truncated, info = base
-            # push previous h into memory
-            if self._last_h is not None:
-                self.mem_buf.append(self._last_h.astype(np.float32, copy=False))
-                self.idx_buf.append(self.t)
-            self.t += 1
-            self._last_h = np.array(obs, dtype=np.float32, copy=True)
-
-            dict_obs = self._dict_obs(h_now=obs)
-            return dict_obs, reward, terminated, truncated, info
-
-        elif len(base) == 4:
-            obs, reward, done, info = base
-            if self._last_h is not None:
-                self.mem_buf.append(self._last_h.astype(np.float32, copy=False))
-                self.idx_buf.append(self.t)
-            self.t += 1
-            self._last_h = np.array(obs, dtype=np.float32, copy=True)
-
-            dict_obs = self._dict_obs(h_now=obs)
-            return dict_obs, reward, done, info
-
+        # batched scores: [B,H,N,N]
+        S = scores / max(1e-6, self.attn_temp)
+        if self.mode == "diagonal":
+            diag_logits = th.diagonal(S, dim1=-2, dim2=-1)                  # [B,H,N]
+            if self.attn_norm == "diag_softmax":
+                w = F.softmax(diag_logits, dim=-1)                          # [B,H,N]
+            elif self.attn_norm == "none":
+                w = diag_logits
+            else:
+                w = F.softmax(diag_logits, dim=-1)
+            A_heads = th.diag_embed(w)                                      # [B,H,N,N]
         else:
-            raise RuntimeError(f"Unexpected step() return length: {len(base)}")
+            if self.attn_norm == "row_softmax":
+                A_heads = F.softmax(S, dim=-1)
+            elif self.attn_norm == "diag_softmax":
+                d = F.softmax(th.diagonal(S, dim1=-2, dim2=-1), dim=-1)     # [B,H,N]
+                A_heads = S.clone()
+                A_heads = A_heads - th.diag_embed(th.diagonal(A_heads, dim1=-2, dim2=-1)) + th.diag_embed(d)
+            else:
+                A_heads = S
+        return A_heads  # [B,H,N,N]
+
+    def _aggregate_heads(self, A_heads: th.Tensor) -> th.Tensor:
+        """
+        Merge heads to a single attention matrix A: [B,N,N]
+        If attn_norm == 'row_softmax' and agg != 'mean', renormalize rows to sum=1.
+        """
+        if self.n_heads == 1:
+            A = A_heads[:, 0, :, :]  # [B,N,N]
+        elif self.head_agg == "mean":
+            A = A_heads.mean(dim=1)  # [B,N,N]
+        elif self.head_agg == "sum":
+            A = A_heads.sum(dim=1)   # [B,N,N]
+        else:  # "max"
+            A, _ = A_heads.max(dim=1)  # [B,N,N]
+
+        if self.attn_norm == "row_softmax" and self.head_agg in {"sum", "max"} and self.mode != "diagonal":
+            row_sum = A.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+            A = A / row_sum
+        return A
+
+    def _per_feature_vector(self, A: th.Tensor) -> th.Tensor:
+        """
+        Reduce attention to a per-feature importance vector [B,N].
+        - diagonal mode: normalized diagonal
+        - generalized : mean over queries -> normalize to sum=1
+        """
+        if self.mode == "diagonal":
+            d = th.diagonal(A, dim1=1, dim2=2)  # [B,N]
+            if self.attn_norm != "diag_softmax":
+                d = F.softmax(d, dim=-1)
+            return d
+        else:
+            A_use = A if self.attn_norm == "row_softmax" else F.softmax(A, dim=-1)
+            vec = A_use.mean(dim=1)  # column-importance (mean over queries)
+            vec = vec / vec.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+            return vec
+
+    # ------------- core pass for flat batch [B, N] -------------
+
+    def _forward_flat(self, x: th.Tensor) -> th.Tensor:
+        B, N = x.shape
+        assert N == self.n_metrics, f"Expected {self.n_metrics} features, got {N}"
+
+        # Build embeddings only for Q/K computation
+        if self.use_content_embed:
+            cols = [x.narrow(1, i, 1) for i in range(self.n_metrics)]
+            e_list = [self.embedders[i](cols[i]) for i in range(self.n_metrics)]
+            E = th.stack(e_list, dim=1)  # [B,N,d_embed]
+        else:
+            E = x.unsqueeze(-1) * self.value_projection  # [B,N,d_embed]
+
+        # Scores -> per-head normalized attention
+        scores = self._compute_A_scores(E)                    # [B,H,N,N] or [H,N,N]
+        A_heads = self._normalize_A_heads(scores, E.size(0))  # [B,H,N,N]
+
+        # Aggregate heads -> final A
+        A = self._aggregate_heads(A_heads)                    # [B,N,N]
+        self.attn_matrix = A.detach()
+
+        # ===== Feature mixing on RAW values =====
+        y_vec = th.bmm(A, x.unsqueeze(-1)).squeeze(-1)        # [B,N]
+        if self.use_residual:
+            y_vec = x + self.residual_weight * y_vec          # residual mixing
+
+        # Diagnostics vectors
+        with th.no_grad():
+            # attention-only importance (legacy)
+            metric_imp = self._per_feature_vector(A)          # [B,N]
+            self.metric_importance = metric_imp.detach()
+
+            # --- NEW: contribution-aware importance ---
+            # column mass of |A| across queries (rows), then weight by |x|
+            col_mass = A.abs().sum(dim=1)                     # [B,N]  sum_i |A_{i,j}|
+            contrib = (col_mass * x.abs())                    # [B,N]  ~ sum_i |A_{i,j} * x_j|
+            contrib = contrib / contrib.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+            self.contrib_importance = contrib.detach()
+
+            # keep rolling histories (averaged over batch)
+            if hasattr(self, "attn_history"):
+                self.attn_history.append(self.metric_importance.mean(dim=0).cpu())
+            if hasattr(self, "contrib_history"):
+                self.contrib_history.append(self.contrib_importance.mean(dim=0).cpu())
+            self.total_steps += 1
+
+        # Post head for LSTM stability / size
+        if self.post_proj is not None:
+            y = self.post_proj(y_vec)                         # [B, final_out_dim]
+        else:
+            y = y_vec
+            if self.out_ln is not None:
+                y = self.out_ln(y)
+            if self.out_act is not None:
+                y = self.out_act(y)
+        return y
+
+    # ----------------- forward with time/history support -----------------
+
+    def forward(self, x: th.Tensor) -> th.Tensor:
+        """
+        Supports:
+          x.shape == [B, N]
+          x.shape == [T, B, N]
+          x.shape == [T, B, S, N]
+        Returns: [T,B,features_dim] or [B,features_dim]
+        """
+        if x.dim() == 2:  # [B, N]
+            return self._forward_flat(x)
+
+        if x.dim() == 3:  # [T, B, N]
+            T, B, N = x.shape
+            assert N == self.n_metrics, f"Expected last dim {self.n_metrics}, got {N}"
+            y = self._forward_flat(x.view(T * B, N))
+            return y.view(T, B, -1)
+
+        if x.dim() == 4:  # [T, B, S, N]
+            T, B, S, N = x.shape
+            assert N == self.n_metrics, f"Expected last dim {self.n_metrics}, got {N}"
+            y_slices = self._forward_flat(x.view(T * B * S, N))  # [T*B*S, F]
+            y = y_slices.view(T, B, S, -1)                       # [T,B,S,F]
+            if self.history_reduce == "mean":
+                y = y.mean(dim=2)                                # [T,B,F]
+            elif self.history_reduce == "last":
+                y = y[:, :, -1, :]                               # [T,B,F]
+            else:  # "max"
+                y, _ = y.max(dim=2)                              # [T,B,F]
+            return y
+
+        raise ValueError(f"Expected obs shape [B,{self.n_metrics}] or [T,B,{self.n_metrics}] "
+                         f"or [T,B,S,{self.n_metrics}], got {tuple(x.shape)}")
+
+    # ----------------- utilities -----------------
+
+    def set_attn_temperature(self, new_temp: float):
+        self.attn_temp = float(new_temp)
 
 
-# model training function for Cartpole
-def train_model_bp(env, args):
-    from stable_baselines3 import PPO
-    from stable_baselines3.common.vec_env import DummyVecEnv
 
-    # your file from previous step
+# def train_model(env, args):
+#     #from attention_no_embedding import AdaptiveAttentionFeatureExtractor
+#     policy_kwargs = dict(
+#         features_extractor_class=AdaptiveAttentionFeatureExtractor,
+#         features_extractor_kwargs=dict(
+#             d_embed=7, d_k=4, n_heads=2, head_agg="mean",
+#             qk_mode="hybrid",
+#             alpha_mode="global", alpha_init=0.5, learn_alpha=False,  # fewer moving parts
+#             mode="generalized",                  # start as per-feature gates
+#             attn_norm="row_softmax",
+#             use_posenc=True,
+#             use_content_embed=False,
+#             attn_temp=1.2,                    # smoother attention
+#             final_out_dim=7,                  # LSTM sees 7-D
+#             out_layernorm=False,
+#             out_activation="tanh",
+#             #out_activation="relu",
+#             use_residual=False, residual_weight=0.2,  # gentle residual mix
+#         ),
+#     )
 
-    # # 1) Make base env and wrap
-    # def make_env():
-    #     env = gym.make("CartPole-v1")
-    #     env = CartPoleTransformerObsWrapper(env, L=64, input_dim=4)
-    #     return env
-
-    # venv = DummyVecEnv([make_env for _ in range(8)])  # vectorized
-    from stable_baselines3.common.monitor import Monitor
-    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-    from stable_baselines3 import PPO
-    from stable_baselines3.common.logger import configure
-
+#     if args.policy=='MlpLstmPolicy':
+#         policy_kwargs_2 = dict(
+#         lstm_hidden_size=64,
+#         n_lstm_layers=1,
+#         #shared_lstm=True,
+#         net_arch=[dict(pi=[16, 16], vf=[16, 16])],
+#         activation_fn=th.nn.ReLU,
+#         ortho_init=True,
+#         normalize_images=False)
+#     elif args.policy=='MlpPolicy':
+#         policy_kwargs_2 = dict(net_arch=[dict(pi=[32, 32], vf=[32, 32])],
+#     activation_fn=nn.ReLU,
+#     ortho_init=True)
     
-
-    def make_env():
-        env = gym.make("CartPole-v1")
-        # Monitor collects per-episode stats and injects them into info["episode"]
-        env = Monitor(env, filename=None)  # set a path instead of None to also write a .monitor.csv
-        # your Dict-observation wrapper
-        env = CartPoleTransformerObsWrapper(env, L=64, input_dim=4)
-        return env
-
-    venv = DummyVecEnv([make_env for _ in range(8)])
-    venv = VecNormalize(venv, norm_obs=False, norm_reward=True, clip_reward=10.0)
-    #wow, it started learning something? at least in Cartpole. The learning speed is similar to LSTM, but I am pretty relieved
-    # ma dużo momentów gdzie wydaje sie ze przestalo sie uczyc ale jakos idzie do przodu, nie wiem co o tym myśleć 
-
-
-    # 2) Transformer config (same as before)
-    tconfig = dict(
-        num_blocks=2,
-        embed_dim=64,
-        num_heads=4,
-        positional_encoding="relative",
-        gtrxl=False,
-        gtrxl_bias=1.0,
-        layer_norm="pre",
+#     policy_kwargs.update(policy_kwargs_2)
+#     from sb3_contrib import RecurrentPPO
+#     from stable_baselines3 import PPO
+#     if args.policy == 'MlpLstmPolicy':
+#         model = RecurrentPPO(
+#                 "MlpLstmPolicy",
+#                 #CriticOnlyAttentionRecurrentPolicy,  # <-- use the subclass
+#                 env,
+#                 policy_kwargs=policy_kwargs,
+#                 n_steps=1024, #maybe more steps would show that attention is fine?
+#                 batch_size=256,                       # 32×8 per appendix
+#                             learning_rate=0.0003, # 0.00003
+#                         # vf_coef=0.5,
+#                         # clip_range_vf=1.0,
+#                         # max_grad_norm=0.5,
+#                         # n_epochs=10,
+#                         # gamma=0.99,
+#                         # ent_coef=0.01,
+#                         # clip_range=0.05,
+#                         # verbose=1,
+#                         #     seed=int(args.seed) if args.seed else 42,
+#                         #     tensorboard_log='./output_malota/'
+#                         vf_coef=1,
+#                      clip_range_vf=10.0,
+#                      max_grad_norm=1,
+#                      gamma=0.95,
+#                      ent_coef=0.001,
+#                      clip_range=0.05,
+#                      verbose=1,
+#                      seed=int(args.seed),
+#                      #policy_kwargs=policy_kwargs,
+#                      tensorboard_log='./output_malota/att_new_settings'
+#             )
+#     elif args.policy == 'MlpPolicy':
+#         model = PPO(
+#             "MlpPolicy",
+#             env,
+#             policy_kwargs=dict(
+#                             **policy_kwargs,                      # keep your extractor etc.
+#                             optimizer_kwargs=dict(eps=1e-5),
+#                         ),
+#                         n_steps=2048,
+#                         #n_steps=256,
+#                         # batch_size=256*3,                       # 32×8 per appendix
+#                         n_epochs=10,
+#                         learning_rate=0.00003,  #0.00003               # with linear schedule: pass a callable if you want decay
+#                         vf_coef=1,
+#                         clip_range_vf=10.0,
+#                         max_grad_norm=1,
+#                         gamma=0.95,
+#                         ent_coef=0.001,
+#                         clip_range=0.05,
+#                         verbose=1,
+#                         seed=int(args.seed),
+#                         #policy_kwargs=policy_kwargs,
+#                         tensorboard_log="./output_malota/gawrl_mlp")
+#     return model
         
-    )
 
-    # 3) PPO with MultiInputPolicy + our extractor
-    policy_kwargs = dict(
-        features_extractor_class=TransformerFeaturesExtractor,
-        features_extractor_kwargs=dict(
-            config=tconfig,
-            input_dim=4,
-            max_episode_steps=venv.envs[0].max_episode_steps if hasattr(venv.envs[0], "max_episode_steps") else 500,
-        ),
-        net_arch=[dict(pi=[64, 64], vf=[64, 64])],
-    )
-
-    #model = PPO("MultiInputPolicy", venv, policy_kwargs=policy_kwargs, verbose=1)
-    model = PPO("MultiInputPolicy", venv,
-        policy_kwargs=policy_kwargs,
-        n_steps=256,            # rollout length (recurrent)
-        batch_size=256*8,
-        learning_rate=1e-4,
-        gamma=0.99,
-        gae_lambda=0.95,
-        ent_coef=0.001, # was 0.0
-        vf_coef=0.5,
-        max_grad_norm=0.5,
-        verbose=1,
-        clip_range=0.2,
-        clip_range_vf=0.2, 
-        tensorboard_log='./cartpole_attn'
-    )
-    model.learn(total_timesteps=200_000)
 
 
 def train_model(env, args):
+    from sb3_contrib import RecurrentPPO
     from stable_baselines3 import PPO
-    from stable_baselines3.common.vec_env import DummyVecEnv
+    # from attention_gawrl_gated import GatedFeatureExtractor
+    #from src.attention_feature_selection import AttentionFeatureExtractor
+    #policy_kwargs = dict(feature_extractor_class=AdaptiveAttentionFeatureExtractor)
+    #with this strategy it is learning the fastest now, but will it be good?
+    #DIAGONAL
+    # policy_kwargs = dict(
+    #     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+    #     features_extractor_kwargs=dict(
+    #         d_embed=64, d_k=64, d_proj=64, n_heads=2,
+    #         qk_mode="hybrid", alpha_mode="mlp", alpha_init=0.3, learn_alpha=True,
+    #         mode="diagonal", attn_norm="diag_softmax",
+    #         use_posenc=True,      # keep simple early
+    #         attn_temp=0.9,
+    #         final_out_dim=64, out_layernorm=True, out_activation="relu",
+    #     ),
+    #     net_arch=[64, 64],      # <-- MLP layers after the extractor
+    #     activation_fn=nn.ReLU,    # or nn.ReLU
+    #     ortho_init=True,)
 
-    
-    tconfig = dict(
-    num_blocks=2,
-    embed_dim=64,
-    num_heads=4,
-    positional_encoding="relative",
-    gtrxl=False,
-    gtrxl_bias=1.0,
-    layer_norm="pre",
-)
+    #TODO GATING
+    # policy_kwargs = dict(
+    # features_extractor_class=GatedFeatureExtractor,
+    # features_extractor_kwargs=dict(
+    #     d_embed=32, d_proj=16, gate_mode="hybrid", alpha_mode="mlp",
+    #     alpha_mlp_hidden=32, alpha_pool="mean", final_out_dim=32
+    # ),)
+#     from attention_gawrl_gated import SimpleFilterExtractor
+#     policy_kwargs = dict(
+#     features_extractor_class=SimpleFilterExtractor,
+#     features_extractor_kwargs=dict(
+#         filter_kwargs=dict(
+#             mode="l0",         # "sigmoid" for L1 or "l0" for Hard-Concrete
+#             hard=True,         # straight-through hard gates
+#             sample=True,       # sample during training
+#             tau_init=1.0,
+#             tau_min=0.1,
+#             lmbda=1e-3,        # sparsity strength (used in .regularization(); see note below)
+#         ),
+#     ),
+# )
+    #GATING NO EMBEDDINGS
+    #policy_kwargs_backup = dict(
+    # Use your raw-input gated extractor
+#     features_extractor_class=GatedFeatureExtractor,
+#     features_extractor_kwargs=dict(
+#         d_gate_hidden=32,         # gate MLP hidden
+#         d_proj=12,                # per-feature projection (7 * 16 -> 112 to LSTM)
+#         gate_mode="hybrid",       # or "content" / "index"
+#         use_posenc=False,         # raw scalars; no pos enc
+#         final_out_dim=None,       # keep 7 * d_proj; equals 112 here
+#         out_layernorm=True,
+#         out_activation="tanh",
+#     ),
 
+#     # MlpLstm "16,16": two LSTM layers, 16 hidden units each
+#     lstm_hidden_size=32,
+#     n_lstm_layers=2,
+#     shared_lstm=True,            # single LSTM shared by actor & critic
+
+#     # Small MLP heads after the LSTM
+#     net_arch=dict(pi=[16, 16], vf=[16, 16]),
+
+#     # Usual MLP defaults
+#     activation_fn=nn.ReLU,
+#     ortho_init=True
+# )
+
+
+
+    #TODO no embeddings
+#     policy_kwargs_backup= dict(
+#     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+#     features_extractor_kwargs=dict(
+#         d_embed=32,
+#         d_k=32,
+#         d_proj=32,
+#         n_heads=2,
+#         qk_mode="hybrid",        # Use actual metric values for attention
+#         use_posenc=True,          # Add positional info
+#         use_content_embed=False,  # DON'T learn embeddings - use raw values!
+#         attn_norm="row_softmax",
+#         attn_temp=0.8,
+#         final_out_dim=32,
+#         out_layernorm=True,
+#         out_activation="relu",
+#     ),
+#     # net_arch=[32, 32],      # <-- MLP layers after the extractor
+#     # activation_fn=nn.ReLU,    # or nn.ReLU
+#     # ortho_init=True,
+#     # MlpLstm "16,16": two LSTM layers, 16 hidden units each
+#     lstm_hidden_size=32,
+#     n_lstm_layers=2,
+#     #shared_lstm=True,            # single LSTM shared by actor & critic
+
+#     # Small MLP heads after the LSTM
+#     net_arch=[dict(pi=[16, 16], vf=[16, 16])],
+
+#     # Usual MLP defaults
+#     activation_fn=nn.ReLU,
+#     ortho_init=True
+
+# )
+#     policy_kwargs = dict(
+#     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+#     features_extractor_kwargs=dict(
+#         d_embed=32,              # Only for attention computation
+#         d_k=16,
+#         n_heads=2,
+#         qk_mode="hybrid",
+#         out_layernorm=True,
+#         out_activation="tanh",
+#     ),
+# )
+    #from attention_no_embedding import AdaptiveAttentionFeatureExtractor
     policy_kwargs = dict(
-        features_extractor_class=TransformerFeaturesExtractor,
+        features_extractor_class=AdaptiveAttentionFeatureExtractor,
         features_extractor_kwargs=dict(
-            config=tconfig,
-            max_episode_steps=500,   # must match TimeLimit
+            d_embed=7, d_k=4, n_heads=2, head_agg="mean",
+            qk_mode="hybrid",#"hybrid",
+            alpha_mode="global", alpha_init=0.5, learn_alpha=False,  # fewer moving parts
+            mode="generalized",                  # start as per-feature gates
+            attn_norm="row_softmax",
+            use_posenc=True,
+            use_content_embed=False,
+            attn_temp=1.2,                    # smoother attention
+            final_out_dim=7,                  # LSTM sees 7-D
+            out_layernorm=False,
+            out_activation="tanh",
+            #out_activation="relu",
+            use_residual=False, residual_weight=0.2,  # gentle residual mix
         ),
-        net_arch=[dict(pi=[64, 64], vf=[64, 64])],
+        lstm_hidden_size=64,
+        n_lstm_layers=1,
+        #shared_lstm=True,
+        net_arch=[dict(pi=[16, 16], vf=[16, 16])],
+        activation_fn=th.nn.ReLU,
+        ortho_init=True,
+        normalize_images=False,
+
+    #     net_arch=[dict(pi=[32, 32], vf=[32, 32])],
+    # activation_fn=nn.ReLU,
+    # ortho_init=True,
     )
-    def linear_schedule(start=2e-4, end=2e-5):
-        return lambda p: end + (start - end) * p
+    # #TODO next last working ATTENTION NO EMBEDDINGS
 
-    # Try these adjustments in your PPO configuration
-    # model = PPO(
-    #     "MultiInputPolicy",
-    #     env,
-    #     n_steps=2048,           # Increase rollout length
-    #     batch_size=64,          # Smaller batch size
-    #     n_epochs=10,
-    #     gamma=0.99,
-    #     gae_lambda=0.95,
-    #     ent_coef=0.01,
-    #     vf_coef=0.5,
-    #     max_grad_norm=0.5,
-    #     learning_rate=3e-4,     # Adjusted learning rate
-    #     clip_range=0.2,
-    #     clip_range_vf=None,     # Try without value clipping
-    #     verbose=1
-    # ) # adjustments proposed by Deepseek created a pretty bad policy
+    # from attention_no_embedding import AdaptiveAttentionFeatureExtractor
+    # policy_kwargs = dict(
+    #     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+    #     features_extractor_kwargs=dict(
+    #         d_embed=7, d_k=4, d_proj=32, n_heads=2,
+    #         qk_mode="hybrid", alpha_mode="mlp", alpha_init=0.3, learn_alpha=True,
+    #         #mode="diagonal", attn_norm="diag_softmax",
+    #         mode="generalized", attn_norm="row_softmax",
+    #         use_posenc=True,      # keep simple early
+    #         attn_temp=0.9,
+    #         final_out_dim=32, out_layernorm=False, out_activation="tanh",
+    #     ),
+    #     # net_arch=[32, 32],      # <-- MLP layers after the extractor
+    #     # activation_fn=nn.ReLU,    # or nn.ReLU
+    #     # ortho_init=True,
+    #     lstm_hidden_size=32,
+    # #n_lstm_layers=2,
+    # #shared_lstm=True,            # single LSTM shared by actor & critic
 
-    model = PPO( # after rerunning the training it wasn't that good
-        "MultiInputPolicy",
-        env,
-    #     n_steps=256, 
-    #     batch_size=256*8,
-    #     policy_kwargs=policy_kwargs,
-    #     n_epochs=10, 
-    #     gamma=0.95, 
-    #     gae_lambda=0.95, 
-    #     ent_coef=0.01, 
-    #     vf_coef=1, 
-    #     max_grad_norm=1,
-    #     target_kl=None,
-    #     learning_rate=0.0003,
-    #     clip_range=0.05,
-    #     #clip_range_vf=10.0, 
-    #     clip_range_vf=0.2,
-    #     verbose=1,
-    #     tensorboard_log='./MLP_OFFICIAL_ATTENTION_TEST')# this model is pretty good though, it learnt to dealocate resources? Or is it bad that it's doing it? Mean reward is low
-        # I have to understand it better, but it seems that it did learn to dealocate resources, because PPO didn't do it. 
+    # # Small MLP heads after the LSTM
+    # net_arch=[dict(pi=[32, 32], vf=[32, 32])],
+
+    # # Usual MLP defaults
+    # activation_fn=nn.ReLU,
+    # ortho_init=True
+        
+    #     )
+    #TODO last working
+    # policy_kwargs = dict(
+    #     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+    #     features_extractor_kwargs=dict(
+    #         d_embed=64, d_k=64, d_proj=64, n_heads=2,
+    #         qk_mode="hybrid", alpha_mode="mlp", alpha_init=0.3, learn_alpha=True,
+    #         mode="generalized", attn_norm="row_softmax",
+    #         use_posenc=True,      # keep simple early
+    #         attn_temp=0.9,
+    #         final_out_dim=64, out_layernorm=True, out_activation="relu",
+    #     ),
+    #     net_arch=[64, 64],      # <-- MLP layers after the extractor
+    #     activation_fn=nn.ReLU,    # or nn.ReLU
+    #     ortho_init=True,)
+
+    # policy_kwargs = dict(
+    #     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+    #     features_extractor_kwargs=dict(
+    #         d_embed=64, d_k=64, d_proj=64, n_heads=2,
+    #         qk_mode="hybrid", alpha_mode="mlp", alpha_init=0.3, learn_alpha=True,
+    #         mode="generalized", attn_norm="row_softmax",
+    #         use_posenc=True,      # keep simple early
+    #         attn_temp=0.9,
+    #         final_out_dim=64, out_layernorm=True, out_activation="relu",
+    #     ),
+    #     net_arch=[64, 64],      # <-- MLP layers after the extractor
+    #     activation_fn=nn.ReLU,    # or nn.ReLU
+    #     ortho_init=True,)
+        # lstm_hidden_size=16,  # LSTM size
+        # net_arch=[dict(pi=[], vf=[])],  # MLP layers
+        # ortho_init=True) # orthogonal initialization
+    # )   
+    #btw I can add a max of 2 heads to still be ahead of parameters count
+    # I can still do the test with more steps - make sure it's not multiple envs but actually more steps
+
+#     policy_kwargs = dict(
+#     features_extractor_class=AdaptiveAttentionFeatureExtractor,
+#     features_extractor_kwargs=dict(
+#         d_embed=32, d_k=16, d_proj=16, n_heads=2,
+#         mode="generalized",
+#         qk_mode="hybrid", alpha_mode="global", alpha_init=0.5, learn_alpha=True,
+#         attn_norm="row_softmax", attn_temp=0.8, use_posenc=True,
+#         final_out_dim=32, out_layernorm=True, out_activation=None,
+#         residual_beta_init=0.9, learn_beta=True, id_layernorm=True,
+#     ),
+#     lstm_hidden_size=32,
+#     net_arch=[dict(pi=[], vf=[])],
+# )
+
+# Train with eval + curriculu
 
 
 
-        n_steps=512,
-        batch_size=8*512,
-        learning_rate=linear_schedule(start=3e-4, end=3e-5),
-        policy_kwargs=policy_kwargs,
-        #learning_rate=0.0003, # 0.00003 przebieg z mniejszym LR -> RecurrentPPO_14
-        vf_coef=0.25,
-        #clip_range_vf=10.0,
-        clip_range_vf=0.2,
-        max_grad_norm=1,
-        gamma=0.97,
-        ent_coef=0.02,
-        clip_range=0.2,
-        verbose=1,
-        seed=int(args.seed) if args.seed else 42,
-        tensorboard_log='./attn_transformers')
-        # policy_kwargs=policy_kwargs,
-        # n_steps=256,
-        # batch_size=256*8,
-        # n_epochs=20,
-        # learning_rate=3e-4,
-        # gamma=0.99,
-        # gae_lambda=0.95,
-        # ent_coef=0.02,
-        # vf_coef=0.25,
-        # clip_range=0.3,
-        # clip_range_vf=0.2,
-        # max_grad_norm=0.5,
-        # target_kl=None,  
-        # verbose=1,
-        # tensorboard_log="./mlp_attn",)
+    # curric = GatingFirstCurriculum(total_timesteps=args.pretraining_timesteps, switch_frac=0.25, ramp_frac=0.25,
+    #                           alpha_start=0.05, alpha_end=0.4, temp_start=1.2, temp_end=0.6)
 
-
-    #model = PPO("MultiInputPolicy", venv, policy_kwargs=policy_kwargs, verbose=1)
-    # model = PPO("MultiInputPolicy", venv,
-    #     policy_kwargs=policy_kwargs,
-    #     n_steps=256,            # rollout length (recurrent)
-    #     batch_size=256*8,
-    #     learning_rate=1e-4,
-    #     gamma=0.99,
-    #     gae_lambda=0.95,
-    #     ent_coef=0.001, # was 0.0
-    #     vf_coef=0.5,
-    #     max_grad_norm=0.5,
-    #     verbose=1,
-    #     clip_range=0.2,
-    #     clip_range_vf=0.2, 
-    #     tensorboard_log='./cartpole_attn'
-    # )
-    model.learn(total_timesteps=args.pretraining_timesteps)
-    model.save('saved_transformer_checkpoint')
-
-    return model, [1,1,1,1,1,1,1]
-    # try:
-    #     model.learn(total_timesteps=200_000)
-    # except:
-    #     model.save('saved_transformer_checkpoint')
+    if args.policy == 'MlpLstmPolicy':
+        model = RecurrentPPO(
+                "MlpLstmPolicy",
+                #CriticOnlyAttentionRecurrentPolicy,  # <-- use the subclass
+                env,
+                policy_kwargs=policy_kwargs,
+                n_steps=1024, #maybe more steps would show that attention is fine?
+                batch_size=256,                       # 32×8 per appendix
+                            learning_rate=0.0003, # 0.00003
+                        # vf_coef=0.5,
+                        # clip_range_vf=1.0,
+                        # max_grad_norm=0.5,
+                        # n_epochs=10,
+                        # gamma=0.99,
+                        # ent_coef=0.01,
+                        # clip_range=0.05,
+                        # verbose=1,
+                        #     seed=int(args.seed) if args.seed else 42,
+                        #     tensorboard_log='./output_malota/'
+                        vf_coef=1,
+                     clip_range_vf=10.0,
+                     max_grad_norm=1,
+                     gamma=0.95,
+                     ent_coef=0.001,
+                     clip_range=0.05,
+                     verbose=1,
+                     seed=int(args.seed),
+                     #policy_kwargs=policy_kwargs,
+                     tensorboard_log='./output_malota/att_new_settings'
+            )
+    elif args.policy == 'MlpPolicy':
+        model = PPO(
+            "MlpPolicy",
+            env,
+            policy_kwargs=dict(
+                            **policy_kwargs,                      # keep your extractor etc.
+                            optimizer_kwargs=dict(eps=1e-5),
+                        ),
+                        n_steps=2048,
+                        #n_steps=256,
+                        # batch_size=256*3,                       # 32×8 per appendix
+                        n_epochs=10,
+                        learning_rate=0.00003,  #0.00003               # with linear schedule: pass a callable if you want decay
+                        vf_coef=1,
+                        clip_range_vf=10.0,
+                        max_grad_norm=1,
+                        gamma=0.95,
+                        ent_coef=0.001,
+                        clip_range=0.05,
+                        verbose=1,
+                        seed=int(args.seed),
+                        #policy_kwargs=policy_kwargs,
+                        tensorboard_log="./output_malota/gawrl_mlp")
+    return model

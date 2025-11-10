@@ -19,7 +19,8 @@ import sb3_contrib
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
-from attention import TransformerObsWrapper
+from feature_selector_2 import FeatureSelectionTrainer
+#from attention import TransformerObsWrapper
 from utils import FEATURE_NAMES
 
 from driver import logger
@@ -37,11 +38,23 @@ from driver.common.swf_jobs import get_jobs_from_file
 from driver.baseline_models import RandomModel, SimpleCPUThresholdModel
 from driver.wrappers import TimeLimit
 
+import numpy as np, torch as th, random
+seed = 0xC0FFEE
+
+random.seed(seed)
+np.random.seed(seed)
+th.manual_seed(seed)
+
+FEATURE_SELECTOR=False
+SELECTION_METHOD="attention" #attention or spca or ig
 ATTENTION=False
 GAWRL=True
 PCA=False
 PCA_OFFLINE=False
 THROUGHPUT=False
+REDUCED_ENV=False
+
+
 submitted_jobs_cnt: int = 0
 oracle_update_url: str = os.getenv("ORACLE_UPDATE_URL",
                                    "http://oracle:8080/update")
@@ -175,60 +188,48 @@ def train(args,
     nsteps = int(args.n_steps)
     logger.info(model)
     # Create the callback: check every 1000 steps
-    #callback = SaveOnBestTrainingRewardCallback(check_freq=100_000, log_dir=tensorboard_log, total_timesteps=total_timesteps, intermediate_models=4)
-    if PCA:
-        from pca import SPCAReweightCallback
-        FEATURE_NAMES = [ "vmAllocatedRatio",
-            "avgCPUUtilization",
-            "avgMemoryUtilization",
-            "p90MemoryUtilization",
-            "p90CPUUtilization",
-            "waitingJobsRatioGlobal",
-            "waitingJobsRatioRecent"]
-        spca_cb = SPCAReweightCallback(
-        warmup_steps=100_000,                 # fit after first rollout
-        min_fit_samples=256,            # need at least this many samples overall
-        refit_every_rollouts=10,         # re-fit after every rollout (2048 steps here)
-        max_history=100_000,               # or cap, e.g., 200_000
-        n_components=4,
-        prefer_spca=True,
-        ema_beta=0.5,
-        clip_weights=(0.5, 2.0),        # a bit tighter if you like
-        assume_normalized_input=False,  # True if VecNormalize(obs=True)
-        orig_metric_dim=7,
-        verbose=1,
-        viz_dir=r"C:\Users\ultramarine\Desktop\ppo_magisterka\trainloop_driver_official\trainloop_driver_final\trainloop-driver\output_malota", # to save PNGs
-        feature_names=FEATURE_NAMES,
-    )
-
-        callback = [callback, spca_cb]
-    
-    # Train the agent
-    if ATTENTION:
-        from attention_axial_viz import AttentionVizCallback
-        from utils import FEATURE_NAMES
-        attn_cb = AttentionVizCallback(
-            steps_to_collect=50_000,     # configurable quota
-            log_dir="attn_viz",
-            feature_names=FEATURE_NAMES,
-            save_npz=False,
-            make_plots_once=False,
-        )
-        #callback = [callback, attn_cb]
-    if THROUGHPUT:
-        from utils import ThroughputCallback
-        throughput_cb = ThroughputCallback(verbose=1)
-        callback = throughput_cb
-        #[callback, throughput_cb]
+    from utils import SaveOnBestTrainingRewardCallback
+    callback = SaveOnBestTrainingRewardCallback(check_freq=100_000, log_dir=tensorboard_log, total_timesteps=total_timesteps, intermediate_models=4)
+    if FEATURE_SELECTOR:
+        model.train_model()
+        return model.get_model()
     if GAWRL:
         #pass
         from utils import FEATURE_NAMES, SaveOnBestTrainingRewardCallback
+        
+        from attention_from_training_callback import AttentionFromRolloutCallback, AttentionMixInspectorCallback
+        mix_cb = AttentionMixInspectorCallback(
+    compute_every_rollouts=1,  # check every rollout
+    warmup_rollouts=1,
+    verbose=1
+)
+        all_training_attn_cb =AttentionFromRolloutCallback(
+    compute_every_rollouts=1,        # compute on every rollout after warmup
+    warmup_rollouts=2,               # wait a bit before aggregating
+    print_every_steps=50_000,       # pretty-print cadence (env steps)
+    print_top_k=7,
+    top_m_for_frequency=None,        # default -> 2*sqrt(N)
+    feature_names=FEATURE_NAMES,
 
-        from attention_gawrl_callback import MeanAttentionVisualizationCallback, RolloutGatesVisualizationCallback, FilterMonitorCallback
-        mean_att_cb = MeanAttentionVisualizationCallback(feature_names=FEATURE_NAMES, verbose=1)
-        #mean_att_cb = FilterMonitorCallback(check_freq=10_000,top_k=4)
-        #mean_att_cb = RolloutGatesVisualizationCallback(feature_names=FEATURE_NAMES, verbose=1)
-        cb = SaveOnBestTrainingRewardCallback(check_freq=10_000,
+    # Optional feature pruning & masking during training:
+    select_k=None,                   # set e.g. 32 to keep (after corr-pruning)
+    apply_mask=False,                # True to actually apply the mask to extractor
+    corr_threshold=0.95,             # prune highly correlated features
+
+    # Reservoir (for corr-pruning on real rows as seen by policy):
+    reservoir_size=20_000,
+
+    # Which attention to use for ranking/printing/masking:
+    rank_source="contrib",           # "contrib" or "metric"
+    mask_source="contrib",           # "contrib" or "metric"
+
+    # Where to save cumulative time series at the end:
+    save_npz_path=f"logs/spca_corr_attn_all_{args.model_name}/attn_cumulative_final.npz",
+
+    verbose=1,
+)
+
+    cb = SaveOnBestTrainingRewardCallback(check_freq=10_000,
     log_dir="output_malota/",
     total_timesteps=500_000,
     intermediate_models=5,                      # or 0 to disable
@@ -237,8 +238,47 @@ def train(args,
     model_prefix="ppo_mlp"
 )
             #buffer_size=50_000, log_freq=10_000, feature_names=FEATURE_NAMES, verbose=1)
-        callback = [mean_att_cb, cb]
+        #callback = [mean_att_cb, cb]
         # [callback, mean_att_cb]
+    from callbacks import FeatureSPCAFromRolloutCallback, FeatureCorrelationFromRolloutCallback
+    cb_spca = FeatureSPCAFromRolloutCallback(
+    compute_every_rollouts=1,
+    warmup_rollouts=2,
+    print_every_steps=50_000,
+    print_top_k=7,
+    reservoir_size=70_000,
+    n_components=3,          # "top 3 SPCA components"
+    alpha=1.0,               # increase for sparser loadings
+    ridge_alpha=0.01,
+    max_iter=1000,
+    tol=1e-8,
+    method="lars",
+    weight_norm="l1",        # or "l2"
+    normalize_weights=True,
+    feature_names=[f"f{i}" for i in range(env.observation_space.shape[-1])],
+    save_dir=f"./logs/spca_corr_attn_all_{args.model_name}/",
+    tensorboard=True,
+    verbose=1,
+)
+    cb_corr = FeatureCorrelationFromRolloutCallback(
+    compute_every_rollouts=1,          # update every rollout
+    warmup_rollouts=2,
+    print_every_steps=50_000,
+    print_top_k=7,
+    redundancy_threshold=0.95,
+    reservoir_size=70_000,
+    target_kind="return",           # or "return" / "reward" /advantage
+    feature_names=[f"f{i}" for i in range(env.observation_space.shape[-1])],
+    save_dir=f"./logs/spca_corr_attn_all_{args.model_name}/",        # set None to disable file dumps
+    tensorboard=True,
+    verbose=1,
+)
+
+    #callback = [all_training_attn_cb, cb]
+    if GAWRL:
+        callback = [cb_spca, cb_corr, all_training_attn_cb, mix_cb, cb]
+    else:
+        callback = [cb_spca, cb_corr, cb]
     model.learn(total_timesteps=total_timesteps, callback=callback if use_callback else None)
     return model
 
@@ -325,7 +365,9 @@ def get_workload(args, extra_args):
 
 def build_env(args, extra_args):
     from utils import FeatureMaskWrapper
-    reduced_env = False
+    reduced_env = True
+    
+
     alg = args.alg
     seed = int(args.seed)
     initial_vm_count = args.initial_vm_count
@@ -382,51 +424,26 @@ def build_env(args, extra_args):
 
     # from gym.wrappers.time_limit import TimeLimit
     logger.info(args)
-    if ATTENTION:
-        def custom_wrapper(env):
-            env = Monitor(env, filename=None)  # or a filepath if you want a CSV
-            env = TimeLimit(env, max_episode_steps=500, penalty=-0.1)
-            env = TransformerObsWrapper(
-                env,
-                L=8,
-                #L=args.observation_history_length,
-                max_episode_steps=1000,
-                clamp_obs=True,
-            )
-            return env
-
-        env = make_vec_env(
-            env_id=env_id,
-            n_envs=args.num_env or 1,
-            seed=seed,
-            env_kwargs=env_kwargs,
-            wrapper_class=custom_wrapper,
-            monitor_dir=None,                 # ← IMPORTANT: we already added Monitor
-        )
-        env = VecNormalize(env, norm_obs=False)
-
-        #env = VecNormalize(env, norm_obs=False, norm_reward=True, clip_reward=10.0) #check if clipping reward helps
-        return env
     
     def custom_wrapper(env):
         env = TimeLimit(env, 
             max_episode_steps=1000, 
             penalty=-0.1
             )
-        if mask is not None:
-            #env = FeatureMaskWrapper(env, mask)
-            env = FeatureMaskWrapper(
-                env,
-                mask=mask,
-                expose_raw=True          # <— only expose raw during eval
+        # if mask is not None:
+        #     #env = FeatureMaskWrapper(env, mask)
+        #     env = FeatureMaskWrapper(
+        #         env,
+        #         mask=mask,
+        #         expose_raw=True          # <— only expose raw during eval
 
-            )
-        elif reduced_env:
+        #     )
+        if reduced_env:
             print('Using reduced env')
             from utils import SelectMetricsWrapper
             env = SelectMetricsWrapper(
-                env, [0,1,6])
-            from noisy_metrics import HardFakeMetricAugmentWrapper
+                env, [0,1,2,5] )
+            #from noisy_metrics import HardFakeMetricAugmentWrapper
             # fake_specs = [
             #     {"index":0,  "type":"mixture_beta", "params":{"weights":[0.6,0.4], "a":[2,8], "b":[5,2]}},
             #     {"index":1,  "type":"ar1",          "params":{"rho":0.95, "sigma":0.03}},
@@ -450,11 +467,8 @@ def build_env(args, extra_args):
                        )
     
     env = VecNormalize(env, norm_obs=False)
-    if PCA_OFFLINE and 'results' in extra_args:
-        from pca_offline import PCAObservationWrapper
-        results = extra_args['results']
-        env = PCAObservationWrapper(env, results["mu"], results["sigma"], results["components"], n_components=5)
-        return env
+    env.seed(seed)
+    env.action_space.seed(seed)
     #env = VecNormalize(env, norm_obs=False, norm_reward=True, clip_reward=10.0) #check if clipping reward helps
 
     return env
@@ -592,37 +606,55 @@ def build_dqn_model(AlgoClass, policy, tensorboard_log, env, args):
 
 def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps, args):
     import torch.nn as nn
-#     policy_kwargs = dict(
-#     net_arch=[dict(pi=[32, 32], vf=[32, 32])],
-#     activation_fn=nn.ReLU,
-#     ortho_init=True,
-# )
-    from utils import SmallCnnFor15xW
-    print("OBS SHAPE:", env.observation_space.shape)  # expect (C,H,W)
-    # policy_kwargs = dict(
-    #     features_extractor_class=SmallCnnFor15xW,
-    #     features_extractor_kwargs=dict(out_dim=128),   # pick 64/128/256 as you like
-    #     net_arch=[dict(pi=[64, 64], vf=[64, 64])],
-    #     activation_fn=nn.ReLU,
-    #     ortho_init=True,
-    # )
-    policy_kwargs = dict(
-    lstm_hidden_size=64, #decrease hidden size further to show that less metrics is better
-    #shared_lstm=True,
-    net_arch=[dict(pi=[32, 32], vf=[32, 32])],
-    activation_fn=nn.ReLU,
-    ortho_init=True,
-)
+    if FEATURE_SELECTOR:
+        fs = FeatureSelectionTrainer(args, env, selection_method=SELECTION_METHOD, feature_names=FEATURE_NAMES)
+        return fs
+    elif policy == 'MlpPolicy':
+        policy_kwargs = dict(
+        net_arch=[dict(pi=[32, 32], vf=[32, 32])],
+        activation_fn=nn.ReLU,
+        ortho_init=True,
+    )
+        n_steps = 2048
+        batch_size=2048
+        from utils import SmallCnnFor15xW
+        print("OBS SHAPE:", env.observation_space.shape)  # expect (C,H,W)
+        # policy_kwargs = dict(
+        #     features_extractor_class=SmallCnnFor15xW,
+        #     features_extractor_kwargs=dict(out_dim=128),   # pick 64/128/256 as you like
+        #     net_arch=[dict(pi=[64, 64], vf=[64, 64])],
+        #     activation_fn=nn.ReLU,
+        #     ortho_init=True,
+        # )
+    elif policy == 'MlpLstmPolicy':
+        policy_kwargs = dict(
+        lstm_hidden_size=64, #decrease hidden size further to show that less metrics is better
+        #lstm_hidden_size=32,
+        #shared_lstm=True,
+        net_arch=[dict(pi=[16, 16], vf=[16, 16])],
+        #net_arch=[dict(pi=[32, 32], vf=[32, 32])],
+        activation_fn=nn.ReLU,
+        ortho_init=True,
+    )
+        n_steps = 256*4
+        batch_size = 256
+
+    
     return AlgoClass(policy=policy,
                      env=env,
-                     #policy_kwargs=policy_kwargs,
-                     n_steps=2048,
+                     policy_kwargs=policy_kwargs,
+                     n_steps=n_steps,
+                     batch_size=batch_size,
+                     #n_steps=256*4,
+                     #batch_size=256,
+                     n_epochs=10,
                     #  n_steps=512,
                     #  batch_size=512,
-                    #n_steps=256,
-                    # batch_size=256*2,
+                    #n_steps=256*4,
+                    #batch_size=256,
                     #batch_size=128,
-                     learning_rate=0.00003,
+                    learning_rate=0.00003,
+                     #learning_rate=0.0003,
                      vf_coef=1,
                      clip_range_vf=10.0,
                      max_grad_norm=1,
@@ -631,16 +663,10 @@ def build_ppo_model(AlgoClass, policy, tensorboard_log, env, n_steps, args):
                      clip_range=0.05,
                      verbose=1,
                      seed=int(args.seed),
-                     #policy_kwargs=policy_kwargs,
                      tensorboard_log=tensorboard_log)
-                     #2048 dla PPO, 2048*3
-                     #0.00003, # 0.00003 #for LSTM model I changed lr to 0.0003, #explained variance more stable for LSTM when 0.00003 than 0.0003, but still grows in the end
-                     #LSTM started learning with 0.0003 after 250k steps, incredibly slow
-
                     #  vf_coef=1,
                     #  #clip_range_vf=10.0,
                     #  clip_range_vf=1.0,
-
                     #  #clip_range=0.2,
                     #  max_grad_norm=1,
                     #  gamma=0.95,
@@ -886,20 +912,15 @@ def training_once(args, extra_args):
     n_steps = int(args.n_steps)
     n_features = 7
     try:
-        if algo in ['Attention', 'PCA']:
-            pass
-        else:
-            AlgoClass = getattr(stable_baselines3, algo)
+        
+        AlgoClass = getattr(stable_baselines3, algo)
     except:
         AlgoClass = getattr(sb3_contrib, algo)
 
     if 'Cnn' in policy:
         args.observation_history_length = 15
         all_observations = np.zeros((1, 1, 1, args.observation_history_length, n_features))
-    elif algo == 'Attention' and GAWRL:
-        #temporarily set for gAWRL
-        args.observation_history_length = 1 #was 4 for basic gAWRL
-        all_observations = np.zeros((1, 1, 1, args.observation_history_length, n_features))
+    
     else:
         args.observation_history_length = 1
         all_observations = np.zeros((1, args.observation_history_length, n_features))
@@ -912,24 +933,11 @@ def training_once(args, extra_args):
     # build model
     if algo == 'DQN':
         model = build_dqn_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, args=args)
-    elif algo=="Attention":
-        if GAWRL:
-            from attention_gawrl_2 import train_model
-            model = train_model(env, args)
-        else:
-            from attention_axial import train_model
-            model = train_model(env, args)
-    elif algo == 'PCA' and PCA_OFFLINE:
-        from pca_offline import train_model
-        model, env, results = train_model(env, args)
-        extra_args['results'] = results
-    elif algo == 'PCA' and PCA:
-        from pca import train_model
-        model = train_model(env, args)
+
     elif args.continue_training:
         from stable_baselines3 import PPO
         from sb3_contrib import RecurrentPPO
-        model = RecurrentPPO.load(r'C:\initial_model\historic_synthetic_dnnevo\RecurrentPPO_128_32_Arch\recurrentppo_MlpLstmPolicy_mlplstm_policy_reduced_64_32', env=env)
+        
         print(f'Loaded model: {model}')
     else:
         model = build_ppo_model(AlgoClass=AlgoClass, policy=policy, env=env, tensorboard_log=tensorboard_log, n_steps=n_steps, args=args)
@@ -980,29 +988,16 @@ def training_once(args, extra_args):
 
 
         model.save(initial_model_path)
-        if PCA_OFFLINE:
-            np.savez_compressed("pca_results.npz", mu=results['mu'], sigma=results['sigma'], components=results['components'])
-        elif PCA:
-            from pca import save_model
-            save_model(model, env)
+        
         logger.info(f'Test the model')
         env.reset()
         num_env = args.num_env
         args.num_env = 1
-        if PCA_OFFLINE:
-            extra_args['results'] = results
+        
         env = build_env(args, extra_args)
         args.num_env = num_env
         new_policy_total_reward, observations, episode_lenghts, rewards, rewards_per_run, observations_evalute_results, actions = test_model(model, env, n_runs=15)
-        if PCA:
-            from utils import evaluate
-            args.workload_file = 'TEST-DNNEVO.swf'
-            args.num_env = 1
-            env = build_env(args, extra_args)
-            mean_reward, observations, rewards, actions = evaluate(model, env)
-            print(f'Mean reward on DNNEVO test set: {mean_reward}')
-            evaluation_results = pd.DataFrame(list(zip(observations, rewards, actions)), columns = ['obs', 'rew', 'actions'])
-            evaluation_results.to_csv(f'/initial_model/eval_results/{model_name}.csv')
+        
         print(rewards.shape)
         df = pd.DataFrame()
         df['reward'] = rewards_per_run
@@ -1233,21 +1228,8 @@ def main():
         evaluate_continuous(args, extra_args)
         return
     elif args.evaluate_mode:
-        # from utils import run_episode
-        # policy_fn = lambda obs: 5  # ACTION_NOTHING
-        # args.simulation_speedup=1
-        
-        # env1 = build_env(args, extra_args)
-        # r1 = run_episode(env1, policy_fn)
-        # args.simulation_speedup=1000
-        # env2 = build_env(args,extra_args)
-        # r2 = run_episode(env2, policy_fn)
-        # print("Return @ speedup=1  :", r1)
-        # print("Return @ speedup=1000:", r2)
         from utils import evaluate_sample
-        #extra_args['feature_mask'] = [1,0,0,0,0,1,1]
         evaluate_sample(args, extra_args)
-        #evaluate_sample(args, extra_args)
         return
     elif args.continuous_mode:
         training_loop(args, extra_args)

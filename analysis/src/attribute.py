@@ -1,7 +1,7 @@
 from email.mime import base
 from captum.attr import IntegratedGradients
-from utils import Utils
-from plot import *
+from analysis.src.utils import Utils
+from analysis.src.plot import *
 import numpy as np
 import torch
 
