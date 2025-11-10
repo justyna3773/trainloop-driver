@@ -1,3 +1,4 @@
+
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,35 +9,35 @@ from gym import spaces
 
 class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
     """
-    Attentive AWRL Feature Extractor (feature mixing, RecurrentPPO/MlpLstmPolicy-ready).
+    Ekstraktor cech oparty na uwadze (mieszanie cech, zgodny z RecurrentPPO/MlpLstmPolicy).
 
-    Key points:
-      - Output is the SAME size as the input feature vector (N) unless `final_out_dim` is set.
-      - Computes an attention matrix A in R^{N x N} (multi-head, content/index/hybrid),
-        then mixes RAW inputs: y = A x  (optionally y <- x + w * A x).
-      - Exposes two importance diagnostics per step (shape [B,N]):
-          * metric_importance : attention-only view (from A)
-          * contrib_importance: contribution-aware importance ~ sum_i |A_{i,j} x_j| (recommended)
+    Najważniejsze cechy:
+      - Wyjście ma ten sam rozmiar co wektor wejściowy (N), chyba że ustawiono `final_out_dim`.
+      - Oblicza macierz uwagi A ∈ R^{N x N} (wielogłowicowa, tryby content/index/hybrid),
+        a następnie miesza surowe wejścia: y = A x (opcjonalnie y <- x + w * A x).
+      - Udostępnia dwie diagnostyki ważności na krok (kształt [B,N]):
+          * metric_importance – widok oparty wyłącznie na macierzy uwagi (z A)
+          * contrib_importance – ważność zależna od wkładu ~ sum_i |A_{i,j} x_j| (zalecana)
 
-    Supported obs shapes:
+    Obsługiwane kształty obserwacji:
       - [B, N]
       - [T, B, N]
-      - [T, B, S, N]   (extra history axis S; reduced inside)
+      - [T, B, S, N]   (dodatkowa oś historii S redukowana w środku)
 
     qk_mode:
-      - "content":  q,k from current content embeddings -> state-dependent attention
-      - "index":    q,k are learned per-index vectors   -> state-agnostic prior
+      - "content":  q,k z bieżących osadzeń – uwaga zależna od stanu
+      - "index":    q,k to wektory uczone dla indeksów – priorytet niezależny od stanu
       - "hybrid":   q,k = α * qk_content + (1-α) * qk_index
 
-    alpha_mode (hybrid only):
-      - "global": single scalar α (learnable if learn_alpha=True)
-      - "mlp":    α(s) predicted from current state embeddings (mean/max pool)
+    alpha_mode (tylko dla trybu hybrydowego):
+      - "global": pojedynczy skalar α (uczalny, jeśli learn_alpha=True)
+      - "mlp":    α(s) wyznaczany z osadzeń stanu (agregacja mean/max)
 
-    Multi-head:
+    Wielogłowicowość:
       - n_heads, d_k, head_agg ("mean" | "sum" | "max")
 
-    LSTM helpers:
-      - final_out_dim: optional linear compression from N -> final_out_dim for the policy
+    Wsparcie dla LSTM:
+      - final_out_dim: opcjonalna liniowa kompresja z N do final_out_dim na potrzeby polityki
       - out_layernorm, out_activation: "tanh" | "relu" | None
     """
 
@@ -44,7 +45,7 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         self,
         observation_space: spaces.Box,
         d_embed: int = 32,
-        d_k: int = 16,                    # per-head dim for Q/K
+        d_k: int = 16,                    # wymiar Q/K na głowę
         n_heads: int = 1,
         head_agg: str = "mean",
         mode: str = "generalized",        # "generalized" | "diagonal"
@@ -52,25 +53,25 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         attn_temp: float = 1.0,
         qk_mode: str = "content",         # "content" | "index" | "hybrid"
         use_posenc: bool = True,
-        use_content_embed: bool = False,  # if False, Q/K still come from a simple (non-learned) projection of raw values
+        use_content_embed: bool = False,  # gdy False, Q/K powstają z prostej (nieuczonej) projekcji wartości
         alpha_init: float = 0.5,
         learn_alpha: bool = True,
 
-        # state-dependent alpha options (hybrid only)
+        # opcje alfy zależnej od stanu (tylko tryb hybrydowy)
         alpha_mode: str = "global",       # "global" | "mlp"
         alpha_mlp_hidden: int = 32,
         alpha_pool: str = "mean",         # "mean" | "max"
 
-        # reduce strategy for history axis S when obs is [T,B,S,N]
+        # strategia redukcji osi historii S dla obserwacji [T,B,S,N]
         history_reduce: str = "mean",     # "mean" | "last" | "max"
 
-        # LSTM-friendly output head
-        final_out_dim: Optional[int] = None,   # default = N
+        # wyjście dopasowane do LSTM
+        final_out_dim: Optional[int] = None,   # domyślnie = N
         out_layernorm: bool = False,
         out_activation: Optional[str] = "tanh",
 
-        # Mixing tweaks
-        use_residual: bool = False,        # y <- x + residual_weight * (A x)
+        # dodatkowe ustawienia miksowania
+        use_residual: bool = True,        # y <- x + residual_weight * (A x)
         residual_weight: float = 1.0,
 
         # Misc
@@ -78,7 +79,7 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
     ):
         n_metrics = int(observation_space.shape[-1])
 
-        # basic dims
+        # podstawowe wymiary
         self.n_metrics = n_metrics
         self.d_embed = int(d_embed)
         self.d_k = int(d_k)
@@ -87,14 +88,14 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         self.head_agg = str(head_agg).lower()
         assert self.head_agg in {"mean", "sum", "max"}
 
-        # raw (pre-optional compression) output is just N
+        # surowe wyjście (przed ewentualną kompresją) ma wymiar N
         self._raw_out_dim = self.n_metrics
 
-        # decide final features_dim exposed to the policy/LSTM
+        # ustalamy końcowy rozmiar cech widoczny dla polityki/LSTM
         self.final_out_dim = int(final_out_dim) if final_out_dim is not None else self._raw_out_dim
         super().__init__(observation_space, features_dim=self.final_out_dim)
 
-        # config
+        # konfiguracja
         self.mode = mode.lower()
         self.attn_norm = attn_norm.lower()
         self.attn_temp = float(attn_temp)
@@ -110,29 +111,29 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         self.use_residual = bool(use_residual)
         self.residual_weight = float(residual_weight)
 
-        # Content embedders (for Q/K creation)
+        # Osadzacze treści (do tworzenia Q/K)
         if self.use_content_embed:
             self.embedders = nn.ModuleList([nn.Linear(1, self.d_embed) for _ in range(self.n_metrics)])
         else:
             self.embedders = None
-            # Non-learned projection of raw scalars to d_embed for Q/K (broadcast)
+            # Nieuczona projekcja skalarów do d_embed na potrzeby Q/K (broadcast)
             self.register_buffer("value_projection", th.ones(1, self.d_embed))
 
         #self.ln_e = nn.LayerNorm(self.d_embed)
         self.ln_e = nn.Identity()
 
-        # Optional positional encoding (index)
+        # Opcjonalne kodowanie pozycyjne (po indeksie)
         self.P_idx = nn.Parameter(th.randn(self.n_metrics, self.d_embed) * 0.02) if self.use_posenc else None
 
-        # Q/K projections to heads
+        # Projekcje Q/K na głowy uwagi
         self.Wq_c = nn.Linear(self.d_embed, self.n_heads * self.d_k, bias=False)
         self.Wk_c = nn.Linear(self.d_embed, self.n_heads * self.d_k, bias=False)
 
-        # Index Q/K parameters per head: [H, N, d_k]
+        # Parametry Q/K dla indeksów per głowa: [H, N, d_k]
         self.Q_idx = nn.Parameter(th.randn(self.n_heads, self.n_metrics, self.d_k) * 0.02)
         self.K_idx = nn.Parameter(th.randn(self.n_heads, self.n_metrics, self.d_k) * 0.02)
 
-        # Hybrid α (global or MLP)
+        # Hybrydowa α (globalna lub z MLP)
         self.alpha_mode = alpha_mode.lower()
         self.alpha_init = float(alpha_init)
         self._alpha_last = self.alpha_init
@@ -159,7 +160,7 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
             self.alpha_pool = None
             self.alpha_mlp = None
 
-        # Post head (optional compression/activation for LSTM interface)
+        # Głowica końcowa (opcjonalna kompresja/aktywacja dla interfejsu z LSTM)
         self.out_layernorm = bool(out_layernorm)
         self.out_activation = (None if out_activation is None else str(out_activation).lower())
         post = []
@@ -183,21 +184,22 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
             else:
                 self.out_act = None
 
-        # Diagnostics
-        self.attn_matrix: Optional[th.Tensor] = None          # [B,N,N] aggregated over heads
-        self.metric_importance: Optional[th.Tensor] = None    # [B,N] attention-only
-        self.contrib_importance: Optional[th.Tensor] = None   # [B,N] contribution-aware (|x_j| * sum_i |A_{i,j}|)
+        # Diagnostyka
+        self.attn_matrix: Optional[th.Tensor] = None          # [B,N,N] zagregowane po głowach
+        self.metric_importance: Optional[th.Tensor] = None    # [B,N] tylko na podstawie uwagi
+        self.contrib_importance: Optional[th.Tensor] = None   # [B,N] zależne od wkładu (|x_j| * sum_i |A_{i,j}|)
 
-        # History
-        self.attn_history = deque(maxlen=1000)      # mean over batch of metric_importance
-        self.contrib_history = deque(maxlen=1000)   # mean over batch of contrib_importance
+        # Historia i maskowanie
+        self.attn_history = deque(maxlen=1000)      # średnia po partii dla metric_importance
+        self.contrib_history = deque(maxlen=1000)   # średnia po partii dla contrib_importance
         self.total_steps = 0
+        self.register_buffer("active_mask", th.ones(self.n_metrics, dtype=th.float32))
 
         if freeze:
             for p in self.parameters():
                 p.requires_grad = False
 
-    # ----------------- helpers -----------------
+    # ----------------- Funkcje pomocnicze -----------------
 
     def _apply_posenc(self, E: th.Tensor) -> th.Tensor:
         # E: [B,N,d_embed]
@@ -207,7 +209,7 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
 
     def _alpha_value(self, E_for_qk: th.Tensor) -> th.Tensor:
         """
-        Returns α as [B,1,1,1] for broadcasting with [B,H,N,d_k]
+        Zwraca α w formie [B,1,1,1] do broadcastu z tensorami [B,H,N,d_k].
         """
         B = E_for_qk.size(0)
         if self.qk_mode != "hybrid":
@@ -216,7 +218,7 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
 
         if self.alpha_mode == "global":
             if self.alpha_param is not None:
-                a = th.sigmoid(self.alpha_param)  # scalar learnable
+                a = th.sigmoid(self.alpha_param)  # uczalny skalar
             else:
                 a = th.tensor(self.alpha_init, device=E_for_qk.device)
             a_b = a.view(1, 1, 1, 1).expand(B, 1, 1, 1)
@@ -229,9 +231,9 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
 
     def _compute_A_scores(self, E: th.Tensor):
         """
-        Return raw (pre-temp) scores:
+        Zwraca surowe (przed skalowaniem temperaturą) logity uwagi:
           - content     : [B,H,N,N]
-          - index       : [H,N,N] (then broadcast to [B,H,N,N] later)
+          - index       : [H,N,N] (później broadcastowane do [B,H,N,N])
           - hybrid      : [B,H,N,N]
         """
         B, N, _ = E.shape
@@ -241,8 +243,10 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         E_for_qk = self._apply_posenc(E)  # [B,N,d_embed]
 
         if self.qk_mode == "content":
+            # Klasyczny scaled dot-product attention: Q i K pochodzą z bieżących cech.
             q = self.Wq_c(E_for_qk).view(B, N, H, dk).permute(0, 2, 1, 3)  # [B,H,N,dk]
             k = self.Wk_c(E_for_qk).view(B, N, H, dk).permute(0, 2, 1, 3)  # [B,H,N,dk]
+            # Mnożymy zapytania przez klucze (transponowane) i skalujemy przez sqrt(dk) dla stabilności.
             S = th.matmul(q, k.transpose(-2, -1)) / (dk ** 0.5)            # [B,H,N,N]
             return S
 
@@ -252,12 +256,14 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
             S = th.matmul(q_i, k_i.transpose(-2, -1)) / (dk ** 0.5)        # [H,N,N]
             return S
 
-        # hybrid
+        # tryb hybrydowy
+        # Łączymy zapytania/klucze zależne od treści (q_c/k_c) z wersją indeksową (q_i/k_i).
         q_c = self.Wq_c(E_for_qk).view(B, N, H, dk).permute(0, 2, 1, 3)    # [B,H,N,dk]
         k_c = self.Wk_c(E_for_qk).view(B, N, H, dk).permute(0, 2, 1, 3)    # [B,H,N,dk]
         q_i = self.Q_idx.unsqueeze(0).expand(B, -1, -1, -1)                # [B,H,N,dk]
         k_i = self.K_idx.unsqueeze(0).expand(B, -1, -1, -1)                # [B,H,N,dk]
         alpha = self._alpha_value(E_for_qk)                                 # [B,1,1,1]
+        # α wyznacza, na ile dominują dynamiczne wektory content, a na ile statyczne priory index.
         q = alpha * q_c + (1.0 - alpha) * q_i
         k = alpha * k_c + (1.0 - alpha) * k_i
         S = th.matmul(q, k.transpose(-2, -1)) / (dk ** 0.5)                 # [B,H,N,N]
@@ -265,12 +271,12 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
 
     def _normalize_A_heads(self, scores: th.Tensor, B: int) -> th.Tensor:
         """
-        Normalize per head and return A_heads: [B,H,N,N]
+        Normalizuje macierze dla każdej głowy i zwraca A_heads: [B,H,N,N].
         """
         H = self.n_heads
         N = self.n_metrics
 
-        # index-only may give [H,N,N]
+        # tryb index może zwrócić tensor [H,N,N]
         if self.qk_mode == "index" and scores.dim() == 3:
             S = scores / max(1e-6, self.attn_temp)                          # [H,N,N]
             if self.mode == "diagonal":
@@ -293,7 +299,7 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
                     A_heads = S
             return A_heads.unsqueeze(0).expand(B, -1, -1, -1)               # [B,H,N,N]
 
-        # batched scores: [B,H,N,N]
+        # zbatchowane logity: [B,H,N,N]
         S = scores / max(1e-6, self.attn_temp)
         if self.mode == "diagonal":
             diag_logits = th.diagonal(S, dim1=-2, dim2=-1)                  # [B,H,N]
@@ -317,8 +323,8 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
 
     def _aggregate_heads(self, A_heads: th.Tensor) -> th.Tensor:
         """
-        Merge heads to a single attention matrix A: [B,N,N]
-        If attn_norm == 'row_softmax' and agg != 'mean', renormalize rows to sum=1.
+        Agreguje głowy w jedną macierz uwagi A: [B,N,N].
+        Jeśli attn_norm == 'row_softmax' i agregacja ≠ 'mean', renormalizuje wiersze do sumy 1.
         """
         if self.n_heads == 1:
             A = A_heads[:, 0, :, :]  # [B,N,N]
@@ -336,9 +342,9 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
 
     def _per_feature_vector(self, A: th.Tensor) -> th.Tensor:
         """
-        Reduce attention to a per-feature importance vector [B,N].
-        - diagonal mode: normalized diagonal
-        - generalized : mean over queries -> normalize to sum=1
+        Redukuje macierz uwagi do wektora ważności cech [B,N].
+        - tryb diagonal: znormalizowana przekątna
+        - tryb generalized: średnia po wierszach -> normalizacja do sumy 1
         """
         if self.mode == "diagonal":
             d = th.diagonal(A, dim1=1, dim2=2)  # [B,N]
@@ -347,7 +353,7 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
             return d
         else:
             A_use = A if self.attn_norm == "row_softmax" else F.softmax(A, dim=-1)
-            vec = A_use.mean(dim=1)  # column-importance (mean over queries)
+            vec = A_use.mean(dim=1)  # ważność kolumn (średnia po zapytaniach)
             vec = vec / vec.sum(dim=-1, keepdim=True).clamp_min(1e-8)
             return vec
 
@@ -357,7 +363,11 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         B, N = x.shape
         assert N == self.n_metrics, f"Expected {self.n_metrics} features, got {N}"
 
-        # Build embeddings only for Q/K computation
+        # Opcjonalna maska wejściowa
+        if getattr(self, "active_mask", None) is not None:
+            x = x * self.active_mask.to(x.device).view(1, -1)
+
+        # Budujemy osadzenia wyłącznie do obliczeń Q/K
         if self.use_content_embed:
             cols = [x.narrow(1, i, 1) for i in range(self.n_metrics)]
             e_list = [self.embedders[i](cols[i]) for i in range(self.n_metrics)]
@@ -365,40 +375,45 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         else:
             E = x.unsqueeze(-1) * self.value_projection  # [B,N,d_embed]
 
-        # Scores -> per-head normalized attention
-        scores = self._compute_A_scores(E)                    # [B,H,N,N] or [H,N,N]
+        # Logity uwagi -> normalizacja na poziomie głów
+        scores = self._compute_A_scores(E)                    # [B,H,N,N] lub [H,N,N]
+        # Normalizujemy uwagę zgodnie z konfiguracją (softmax/diag/brak normy).
+        # Wynik to zestaw macierzy uwagi (po jednej na każdą głowę).
         A_heads = self._normalize_A_heads(scores, E.size(0))  # [B,H,N,N]
 
-        # Aggregate heads -> final A
+        # Agregujemy głowy -> finalna macierz A
         A = self._aggregate_heads(A_heads)                    # [B,N,N]
+        # Zachowujemy uwage do analiz (po odłączeniu gradientów).
         self.attn_matrix = A.detach()
 
-        # ===== Feature mixing on RAW values =====
+        # ===== Mieszanie cech na surowych wartościach =====
+        # Macierz A przekształca pierwotne cechy: każda cecha wyjściowa jest średnią ważoną wszystkich wejść.
         y_vec = th.bmm(A, x.unsqueeze(-1)).squeeze(-1)        # [B,N]
         if self.use_residual:
-            y_vec = x + self.residual_weight * y_vec          # residual mixing
+            # Dodajemy składnik rezydualny, aby zachować informację z oryginalnych wejść.
+            y_vec = x + self.residual_weight * y_vec          # miksowanie rezydualne
 
-        # Diagnostics vectors
+        # Wektory diagnostyczne
         with th.no_grad():
-            # attention-only importance (legacy)
+            # ważność oparta wyłącznie na uwadze (wersja klasyczna)
             metric_imp = self._per_feature_vector(A)          # [B,N]
             self.metric_importance = metric_imp.detach()
 
-            # --- NEW: contribution-aware importance ---
-            # column mass of |A| across queries (rows), then weight by |x|
+            # --- Nowość: ważność zależna od wkładu ---
+            # masa kolumnowa |A| po wierszach, następnie ważenie przez |x|
             col_mass = A.abs().sum(dim=1)                     # [B,N]  sum_i |A_{i,j}|
             contrib = (col_mass * x.abs())                    # [B,N]  ~ sum_i |A_{i,j} * x_j|
             contrib = contrib / contrib.sum(dim=-1, keepdim=True).clamp_min(1e-8)
             self.contrib_importance = contrib.detach()
 
-            # keep rolling histories (averaged over batch)
+            # Aktualizujemy historię kroczącą (średnia po partii)
             if hasattr(self, "attn_history"):
                 self.attn_history.append(self.metric_importance.mean(dim=0).cpu())
             if hasattr(self, "contrib_history"):
                 self.contrib_history.append(self.contrib_importance.mean(dim=0).cpu())
             self.total_steps += 1
 
-        # Post head for LSTM stability / size
+        # Warstwa końcowa dla stabilności/rozmiaru wejścia LSTM
         if self.post_proj is not None:
             y = self.post_proj(y_vec)                         # [B, final_out_dim]
         else:
@@ -409,15 +424,15 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
                 y = self.out_act(y)
         return y
 
-    # ----------------- forward with time/history support -----------------
+    # ----------------- Przetwarzanie z obsługą czasu/historii -----------------
 
     def forward(self, x: th.Tensor) -> th.Tensor:
         """
-        Supports:
+        Obsługuje kształty:
           x.shape == [B, N]
           x.shape == [T, B, N]
           x.shape == [T, B, S, N]
-        Returns: [T,B,features_dim] or [B,features_dim]
+        Zwraca: [T,B,features_dim] lub [B,features_dim]
         """
         if x.dim() == 2:  # [B, N]
             return self._forward_flat(x)
@@ -444,10 +459,59 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         raise ValueError(f"Expected obs shape [B,{self.n_metrics}] or [T,B,{self.n_metrics}] "
                          f"or [T,B,S,{self.n_metrics}], got {tuple(x.shape)}")
 
-    # ----------------- utilities -----------------
+    # ----------------- Funkcje pomocnicze -----------------
 
     def set_attn_temperature(self, new_temp: float):
         self.attn_temp = float(new_temp)
+
+    def set_active_mask(self, mask) -> None:
+        if not isinstance(mask, th.Tensor):
+            mask = th.tensor(mask)
+        mask = mask.to(dtype=th.float32, device=self.active_mask.device).view(-1)
+        assert mask.numel() == self.n_metrics
+        self.active_mask.copy_(mask)
+
+    def clear_active_mask(self) -> None:
+        self.active_mask.fill_(1.0)
+
+    def get_feature_mask(
+        self,
+        keep_top_k: Optional[int] = None,
+        threshold: Optional[float] = None,
+        source: str = "metric",   # nowe: "metric" lub "contrib"
+    ) -> th.Tensor:
+        """
+        Buduje maskę na podstawie średnich wag uwagi z OSTATNICH 1000 KROKÓW (lub mniej, jeśli historia krótsza).
+        Wybiera historię bazującą na metrykach lub wkładzie.
+
+        Zwraca tensor bool o kształcie [N]: True = zostaw, False = zamaskuj.
+        """
+        assert source in {"metric", "contrib"}
+        hist_deque = self.attn_history if source == "metric" else self.contrib_history
+
+        if len(hist_deque) == 0:
+            return th.ones(self.n_metrics, dtype=th.bool)
+
+        hist = th.stack(list(hist_deque), dim=0)  # [T,N]
+        mean_attn = hist.mean(dim=0)              # [N]
+
+        if keep_top_k is None and threshold is None:
+            keep_top_k = min(5, self.n_metrics)
+
+        if keep_top_k is not None:
+            k = int(max(1, min(self.n_metrics, keep_top_k)))
+            topk_idx = th.topk(mean_attn, k=k, largest=True).indices
+            mask = th.zeros(self.n_metrics, dtype=th.bool)
+            mask[topk_idx] = True
+            return mask
+
+        max_val = float(mean_attn.max().item())
+        thr_val = float(threshold) * (max_val if max_val > 0 else 1.0)
+        mask = mean_attn >= thr_val
+        if not bool(mask.any()):
+            mask[mean_attn.argmax()] = True
+        return mask
+
 
 
 
