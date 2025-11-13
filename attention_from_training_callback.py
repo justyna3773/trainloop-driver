@@ -326,7 +326,7 @@ class AttentionFromRolloutCallback(BaseCallback):
         rank_source: str = "contrib",  # "contrib" | "metric"
         mask_source: str = "contrib",  # "contrib" | "metric"
         # saving/logging
-        save_npz_path: str = "logs/attn_cumulative/attn_cumulative_final.npz",
+        save_npz_path: str = "./logs/attn_cumulative/attn_cumulative_final.npz",
         verbose: int = 1,
     ):
         super().__init__(verbose)

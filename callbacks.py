@@ -6,20 +6,20 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 class FeatureCorrelationFromRolloutCallback(BaseCallback):
     """
-    Correlation diagnostics for (Recurrent)PPO with MlpLstmPolicy.
+    Diagnostyka korelacji dla (Recurrent)PPO z polityką MlpLstmPolicy.
 
-    At selected rollout ends (no extra env steps):
-      • Pull rollout observations [T, B, N] and a target vector (advantages/returns/rewards)
-      • Add rows to a fixed-size reservoir (uniform sample of all rows seen so far)
-      • At print cadence -> compute & print:
-          - feature->target Pearson r  (ranked by |r|)
-          - feature<->feature correlation (flag redundant pairs |rho| >= threshold)
-      • Periodic NPZ/CSV dumps if save_dir is set
-      • FINAL snapshot saved at training end (_on_training_end)
+    Na wybranych zakończeniach rolloutów (bez dodatkowych kroków środowiska):
+      • Pobiera obserwacje rolloutu [T, B, N] oraz wektor celu (advantage/return/reward)
+      • Dodaje wiersze do rezerwuaru o stałym rozmiarze (losowa próbka wszystkich dotąd widzianych wierszy)
+      • W zadanych odstępach drukuje i loguje:
+          - korelację Pearsona cecha→cel (uszeregowaną wg |r|)
+          - korelacje cecha↔cecha (oznacza pary redundantne o |rho| >= próg)
+      • Okresowo zapisuje zrzuty NPZ/CSV jeśli ustawiono save_dir
+      • Zapisuje końcowy snapshot na końcu treningu (_on_training_end)
 
-    Notes:
-      - Reservoir bounds memory; attention/cum stats elsewhere are unaffected.
-      - Robust to zero-variance columns (returns 0 correlation for them).
+    Uwaga:
+      - Rezerwuar ogranicza zużycie pamięci; statystyki uwagowe gdzie indziej pozostają bez zmian.
+      - Odporne na kolumny o zerowej wariancji (dla nich korelacja = 0).
     """
 
     def __init__(
@@ -80,6 +80,7 @@ class FeatureCorrelationFromRolloutCallback(BaseCallback):
 
     @staticmethod
     def _to_np(x):
+        """Konwertuj wejście (tensor/ndarray/lista) na ndarray NumPy."""
         if x is None:
             return None
         if isinstance(x, np.ndarray):
@@ -105,6 +106,7 @@ class FeatureCorrelationFromRolloutCallback(BaseCallback):
         return self._to_np(t)
 
     def _reservoir_add(self, X_batch: np.ndarray, y_batch: np.ndarray):
+        """Dodaj wiersze do rezerwuaru metodą losowej próby (reservoir sampling)."""
         B, N = X_batch.shape
         if self._X is None:
             size = self.reservoir_size if self.reservoir_size > 0 else B
@@ -802,7 +804,7 @@ class AttentionFromRolloutCallback(BaseCallback):
         rank_source: str = "contrib",  # "contrib" | "metric"
         mask_source: str = "contrib",  # "contrib" | "metric"
         # saving/logging
-        save_npz_path: str = "logs/attn_cumulative/attn_cumulative_final.npz",
+        save_npz_path: str = "./logs/attn_cumulative/attn_cumulative_final.npz",
         verbose: int = 1,
     ):
         super().__init__(verbose)

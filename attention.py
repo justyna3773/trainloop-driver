@@ -71,7 +71,7 @@ class AdaptiveAttentionFeatureExtractor(BaseFeaturesExtractor):
         out_activation: Optional[str] = "tanh",
 
         # dodatkowe ustawienia miksowania
-        use_residual: bool = True,        # y <- x + residual_weight * (A x)
+        use_residual: bool = False,        # y <- x + residual_weight * (A x)
         residual_weight: float = 1.0,
 
         # Misc
@@ -732,23 +732,23 @@ def train_model(env, args):
         features_extractor_class=AdaptiveAttentionFeatureExtractor,
         features_extractor_kwargs=dict(
             d_embed=7, d_k=4, n_heads=2, head_agg="mean",
-            qk_mode="hybrid",#"hybrid",
-            alpha_mode="global", alpha_init=0.5, learn_alpha=False,  # fewer moving parts
-            mode="generalized",                  # start as per-feature gates
+            qk_mode="hybrid",#"hybrid/content/index",
+            alpha_mode="global", alpha_init=0.5, learn_alpha=False, 
+            mode="generalized",                  
             attn_norm="row_softmax",
             use_posenc=True,
             use_content_embed=False,
-            attn_temp=1.2,                    # smoother attention
-            final_out_dim=7,                  # LSTM sees 7-D
+            attn_temp=1.2,                    
+            final_out_dim=7,                  
             out_layernorm=False,
             out_activation="tanh",
             #out_activation="relu",
-            use_residual=False, residual_weight=0.2,  # gentle residual mix
+            use_residual=False, residual_weight=0.2,  
         ),
-        lstm_hidden_size=64,
+        lstm_hidden_size=32,
         n_lstm_layers=1,
         #shared_lstm=True,
-        net_arch=[dict(pi=[16, 16], vf=[16, 16])],
+        net_arch=[dict(pi=[32, 32], vf=[32, 32])],
         activation_fn=th.nn.ReLU,
         ortho_init=True,
         normalize_images=False,

@@ -46,7 +46,7 @@ np.random.seed(seed)
 th.manual_seed(seed)
 
 FEATURE_SELECTOR=False
-SELECTION_METHOD="attention" #attention or spca or ig
+SELECTION_METHOD="spca" #attention or spca or ig
 ATTENTION=False
 GAWRL=True
 PCA=False
@@ -365,7 +365,7 @@ def get_workload(args, extra_args):
 
 def build_env(args, extra_args):
     from utils import FeatureMaskWrapper
-    reduced_env = True
+    reduced_env = False
     
 
     alg = args.alg
@@ -442,7 +442,7 @@ def build_env(args, extra_args):
             print('Using reduced env')
             from utils import SelectMetricsWrapper
             env = SelectMetricsWrapper(
-                env, [0,1,2,5] )
+                env, [0,1,2,5,6] )
             #from noisy_metrics import HardFakeMetricAugmentWrapper
             # fake_specs = [
             #     {"index":0,  "type":"mixture_beta", "params":{"weights":[0.6,0.4], "a":[2,8], "b":[5,2]}},
