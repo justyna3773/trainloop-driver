@@ -213,6 +213,7 @@ def common_arg_parser():
     parser.add_argument('--n_steps', type=int, default=2048)
     parser.add_argument('--model_name', type=str, default='')
     parser.add_argument('--continue_training', default=False)
+    parser.add_argument('--selected_metrics', type=str, default=None)
 
     return parser
 

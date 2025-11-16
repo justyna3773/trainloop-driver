@@ -207,8 +207,11 @@ def evaluate_sample(args, extra_args):
                 #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\PICKED_METRICS\3_4_6_recurrentppp_156\recurrentppo_MlpLstmPolicy_mlplstm_avgmem_p90mem_waitingrecent.zip', env=env)
 
                 #TODO attention
-                model=RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\FINAL_MODELS\RETRAINING\0_1_2_5_recurrentppo_196\recurrentppo_MlpLstmPolicy_mlplstm_0_1_2_5.zip', env=env)
+                #model=RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\FINAL_MODELS\RETRAINING\0_1_2_5_recurrentppo_196\recurrentppo_MlpLstmPolicy_mlplstm_0_1_2_5.zip', env=env)
                 #model = RecurrentPPO.load(r'c:\initial_model\historic_synthetic_dnnevo\RANDOM\ATTENTION\recurrentppo_171_0_00007\attention_MlpLstmPolicy_mlplstm_att_tunedtolstm.zip', env=env)
+
+
+                model=RecurrentPPO.load(r'')
                 pass
             elif PCA:
                 pass   

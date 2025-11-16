@@ -19,7 +19,7 @@ import sb3_contrib
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
-from feature_selector_2 import FeatureSelectionTrainer
+from feature_selector import FeatureSelectionTrainer
 #from attention import TransformerObsWrapper
 from utils import FEATURE_NAMES
 
@@ -45,14 +45,9 @@ random.seed(seed)
 np.random.seed(seed)
 th.manual_seed(seed)
 
-FEATURE_SELECTOR=False
-SELECTION_METHOD="spca" #attention or spca or ig
-ATTENTION=False
-GAWRL=True
-PCA=False
-PCA_OFFLINE=False
-THROUGHPUT=False
-REDUCED_ENV=False
+FEATURE_SELECTOR=True
+SELECTION_METHOD="attention" #attention or spca or ig
+
 
 
 submitted_jobs_cnt: int = 0
@@ -193,92 +188,6 @@ def train(args,
     if FEATURE_SELECTOR:
         model.train_model()
         return model.get_model()
-    if GAWRL:
-        #pass
-        from utils import FEATURE_NAMES, SaveOnBestTrainingRewardCallback
-        
-        from attention_from_training_callback import AttentionFromRolloutCallback, AttentionMixInspectorCallback
-        mix_cb = AttentionMixInspectorCallback(
-    compute_every_rollouts=1,  # check every rollout
-    warmup_rollouts=1,
-    verbose=1
-)
-        all_training_attn_cb =AttentionFromRolloutCallback(
-    compute_every_rollouts=1,        # compute on every rollout after warmup
-    warmup_rollouts=2,               # wait a bit before aggregating
-    print_every_steps=50_000,       # pretty-print cadence (env steps)
-    print_top_k=7,
-    top_m_for_frequency=None,        # default -> 2*sqrt(N)
-    feature_names=FEATURE_NAMES,
-
-    # Optional feature pruning & masking during training:
-    select_k=None,                   # set e.g. 32 to keep (after corr-pruning)
-    apply_mask=False,                # True to actually apply the mask to extractor
-    corr_threshold=0.95,             # prune highly correlated features
-
-    # Reservoir (for corr-pruning on real rows as seen by policy):
-    reservoir_size=20_000,
-
-    # Which attention to use for ranking/printing/masking:
-    rank_source="contrib",           # "contrib" or "metric"
-    mask_source="contrib",           # "contrib" or "metric"
-
-    # Where to save cumulative time series at the end:
-    save_npz_path=f"logs/spca_corr_attn_all_{args.model_name}/attn_cumulative_final.npz",
-
-    verbose=1,
-)
-
-    cb = SaveOnBestTrainingRewardCallback(check_freq=10_000,
-    log_dir="output_malota/",
-    total_timesteps=500_000,
-    intermediate_models=5,                      # or 0 to disable
-    milestones=[50_000, 100_000, 500_000],      # <-- your requested save points
-    verbose=1,
-    model_prefix="ppo_mlp"
-)
-            #buffer_size=50_000, log_freq=10_000, feature_names=FEATURE_NAMES, verbose=1)
-        #callback = [mean_att_cb, cb]
-        # [callback, mean_att_cb]
-    from callbacks import FeatureSPCAFromRolloutCallback, FeatureCorrelationFromRolloutCallback
-    cb_spca = FeatureSPCAFromRolloutCallback(
-    compute_every_rollouts=1,
-    warmup_rollouts=2,
-    print_every_steps=50_000,
-    print_top_k=7,
-    reservoir_size=70_000,
-    n_components=3,          # "top 3 SPCA components"
-    alpha=1.0,               # increase for sparser loadings
-    ridge_alpha=0.01,
-    max_iter=1000,
-    tol=1e-8,
-    method="lars",
-    weight_norm="l1",        # or "l2"
-    normalize_weights=True,
-    feature_names=[f"f{i}" for i in range(env.observation_space.shape[-1])],
-    save_dir=f"./logs/spca_corr_attn_all_{args.model_name}/",
-    tensorboard=True,
-    verbose=1,
-)
-    cb_corr = FeatureCorrelationFromRolloutCallback(
-    compute_every_rollouts=1,          # update every rollout
-    warmup_rollouts=2,
-    print_every_steps=50_000,
-    print_top_k=7,
-    redundancy_threshold=0.95,
-    reservoir_size=70_000,
-    target_kind="return",           # or "return" / "reward" /advantage
-    feature_names=[f"f{i}" for i in range(env.observation_space.shape[-1])],
-    save_dir=f"./logs/spca_corr_attn_all_{args.model_name}/",        # set None to disable file dumps
-    tensorboard=True,
-    verbose=1,
-)
-
-    #callback = [all_training_attn_cb, cb]
-    if GAWRL:
-        callback = [cb_spca, cb_corr, all_training_attn_cb, mix_cb, cb]
-    else:
-        callback = [cb_spca, cb_corr, cb]
     model.learn(total_timesteps=total_timesteps, callback=callback if use_callback else None)
     return model
 
@@ -365,8 +274,7 @@ def get_workload(args, extra_args):
 
 def build_env(args, extra_args):
     from utils import FeatureMaskWrapper
-    reduced_env = False
-    
+    selected_metrics = args.selected_metrics
 
     alg = args.alg
     seed = int(args.seed)
@@ -418,8 +326,7 @@ def build_env(args, extra_args):
     # env = Monitor(env, log_dir)
     algo = args.algo
     policy = args.policy
-    #TODO changed tensorboard_log
-    #tensorboard_log = f"/output_models_initial/{algo.lower()}/{policy}/"
+    
     tensorboard_log = "./output_malota"
 
     # from gym.wrappers.time_limit import TimeLimit
@@ -438,23 +345,12 @@ def build_env(args, extra_args):
         #         expose_raw=True          # <— only expose raw during eval
 
         #     )
-        if reduced_env:
+        if selected_metrics:
             print('Using reduced env')
             from utils import SelectMetricsWrapper
             env = SelectMetricsWrapper(
-                env, [0,1,2,5,6] )
-            #from noisy_metrics import HardFakeMetricAugmentWrapper
-            # fake_specs = [
-            #     {"index":0,  "type":"mixture_beta", "params":{"weights":[0.6,0.4], "a":[2,8], "b":[5,2]}},
-            #     {"index":1,  "type":"ar1",          "params":{"rho":0.95, "sigma":0.03}},
-            #     {"index":9,  "type":"lagged_base",  "params":{"base_idx":0, "lag":5, "noise":0.05}},
-            #     {"index":10, "type":"linear_combo", "params":{"weights":[(1,0.4),(5,0.6)], "noise":0.05, "scale":4.0}},
-            #     {"index":11, "type":"seasonal",     "params":{"period":200, "amp":0.25, "noise":0.02}},
-            #     {"index":12, "type":"random_walk",  "params":{"sigma":0.02}},
-            #     {"index":13, "type":"reward_ema",   "params":{"alpha":0.05, "scale":0.5}},
-            #     {"index":14, "type":"beta",         "params":{"a":2.0, "b":2.0}},
-            # ]
-            # env = HardFakeMetricAugmentWrapper(env, fake_specs=fake_specs, seed=42)
+                env, selected_metrics)
+            
         print(env.observation_space)
         return env
 

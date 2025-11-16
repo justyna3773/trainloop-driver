@@ -6,6 +6,7 @@ output_models_initial/
 output_malota/
 output_malota/**
 output_malota_initial/
+FINAL_MODELS/
 *.swf
 pictures/
 pictures/**
