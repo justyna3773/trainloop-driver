@@ -205,8 +205,8 @@ class FeatureSelectionTrainer:
 
         elif policy == "MlpLstmPolicy":
             policy_kwargs = dict(
-                lstm_hidden_size=32,
-                net_arch=[dict(pi=[32, 32], vf=[32, 32])],
+                lstm_hidden_size=64,
+                net_arch=[dict(pi=[16, 16], vf=[16, 16])],
                 activation_fn=nn.ReLU,
                 ortho_init=True,
             )
