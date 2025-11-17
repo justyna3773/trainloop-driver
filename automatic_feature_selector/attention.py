@@ -13,6 +13,21 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from gym import spaces
 
 
+"""
+attention_clean.py
+------------------
+Kod ekstraktora uwagi.
+"""
+
+import torch as th
+import torch.nn as nn
+import torch.nn.functional as F
+from collections import deque
+from typing import Optional
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from gym import spaces
+
+
 class AttentionExtractor(BaseFeaturesExtractor):
     """
     Uproszczony ekstraktor oparty na mechanizmie uwagi (wariant hybrydowy).
@@ -24,15 +39,13 @@ class AttentionExtractor(BaseFeaturesExtractor):
         n_heads: Liczba głów uwagi.
         attn_temp: Temperatura w normalizacji logitów uwagi (większa → „łagodniejszy” softmax).
         head_agg: Agregacja głów: "mean" | "sum" | "max".
-        mode: Tryb uwagi: "generalized" (pełna macierz) lub "diagonal" (tylko przekątna).
-        attn_norm: Normalizacja uwagi: "row_softmax" | "diag_softmax" | "none".
         use_posenc: Czy dodawać indeksowe osadzenia pozycyjne cech (stałe P_idx).
         use_content_embed: Czy używać osobnych liniowych embedderów dla wartości cech (zamiast skalarnego skalowania).
         alpha_mode: Sposób wyznaczania α łączącego część indeksową i zależną od treści: "global" lub "pool".
         alpha_init: Wartość początkowa α (w przypadku trybu "global").
         learn_alpha: Czy uczyć skalar α (dla trybu "global").
         alpha_mlp_hidden: Rozmiar warstwy ukrytej MLP dla α (dla trybu innego niż "global").
-        alpha_pool: Rodzaj pooling’u wejścia przed MLP α: "mean" lub "max".
+        alpha_pool: Rodzaj pooling'u wejścia przed MLP α: "mean" lub "max".
         final_out_dim: Jeśli podane, rzutuje wyjście do tej liczby wymiarów (Linear + opcjonalna aktywacja).
         out_layernorm: Czy stosować LayerNorm na wyjściu (gdy final_out_dim nie jest ustawione).
         out_activation: Aktywacja na wyjściu: "tanh" | "relu" | None.
@@ -49,8 +62,6 @@ class AttentionExtractor(BaseFeaturesExtractor):
         n_heads: int = 1,
         attn_temp: float = 1.0,
         head_agg: str = "mean",
-        mode: str = "generalized",
-        attn_norm: str = "row_softmax",
         use_posenc: bool = True,
         use_content_embed: bool = False,
         alpha_mode: str = "global",
@@ -71,8 +82,8 @@ class AttentionExtractor(BaseFeaturesExtractor):
         self.d_k = int(d_k)
         self.n_heads = int(n_heads)
         self.head_agg = head_agg.lower()
-        self.mode = mode.lower()
-        self.attn_norm = attn_norm.lower()
+        self.mode = "generalized"  # Stały tryb
+        self.attn_norm = "row_softmax"  # Stała normalizacja
         self.attn_temp = float(attn_temp)
         self.use_posenc = bool(use_posenc)
         self.use_content_embed = bool(use_content_embed)
@@ -81,8 +92,6 @@ class AttentionExtractor(BaseFeaturesExtractor):
 
         assert self.n_heads >= 1
         assert self.head_agg in {"mean", "sum", "max"}
-        assert self.mode in {"generalized", "diagonal"}
-        assert self.attn_norm in {"row_softmax", "diag_softmax", "none"}
 
         raw_dim = n_metrics
         features_dim = int(final_out_dim) if final_out_dim is not None else raw_dim
@@ -154,13 +163,29 @@ class AttentionExtractor(BaseFeaturesExtractor):
                 p.requires_grad = False
 
     def _embed(self, x: th.Tensor) -> th.Tensor:
+        """
+        Tworzy osadzenia (embeddings) dla każdej cechy z wejściowego tensora obserwacji.
+        
+        Wejście: x [B, N] - batch obserwacji, gdzie N to liczba cech.
+        Wyjście: E [B, N, d_embed] - osadzenia dla każdej cechy.
+        """
         if self.use_content_embed:
+            # Tryb z osobnymi embedderami: każda cecha ma własną liniową warstwę
+            # Dzielimy wejście na kolumny (po jednej cechy) i przekształcamy każdą osobno
             cols = [x.narrow(1, i, 1) for i in range(self.n_metrics)]
+            # Stosujemy odpowiedni embedder do każdej kolumny i sklejamy wyniki
             E = th.stack([layer(col) for layer, col in zip(self.embedders, cols)], dim=1)
         else:
+            # Tryb bez embedderów: skalowanie wartości przez stały wektor projekcji
+            # Rozszerzamy x do [B, N, 1] i mnożymy przez [1, d_embed] -> [B, N, d_embed]
             E = x.unsqueeze(-1) * self.value_projection
+        
+        # Dodajemy osadzenia pozycyjne (positional encodings) jeśli są włączone
+        # P_idx to parametry przypisane do każdej pozycji cechy (niezależne od wartości)
         if self.P_idx is not None:
             E = E + self.P_idx.view(1, self.n_metrics, self.d_embed)
+        
+        # Normalizacja warstwowa na końcu: stabilizuje uczenie i normalizuje osadzenia
         return self.ln_e(E)
 
     def _alpha(self, E: th.Tensor) -> th.Tensor:
@@ -194,41 +219,40 @@ class AttentionExtractor(BaseFeaturesExtractor):
         return scores / max(1e-6, self.attn_temp)
 
     def _normalize_heads(self, scores: th.Tensor) -> th.Tensor:
-        if self.mode == "diagonal":
-            diag = th.diagonal(scores, dim1=-2, dim2=-1)
-            if self.attn_norm == "diag_softmax":
-                diag = F.softmax(diag, dim=-1)
-            elif self.attn_norm != "none":
-                diag = F.softmax(diag, dim=-1)
-            return th.diag_embed(diag)
-        if self.attn_norm == "row_softmax":
-            return F.softmax(scores, dim=-1)
-        if self.attn_norm == "diag_softmax":
-            diag = F.softmax(th.diagonal(scores, dim1=-2, dim2=-1), dim=-1)
-            return th.diag_embed(diag)
-        return scores
+        # Zawsze używamy row_softmax dla trybu generalized
+        return F.softmax(scores, dim=-1)
 
     def _aggregate_heads(self, heads: th.Tensor) -> th.Tensor:
+        """
+        Agreguje wiele głów uwagi w jedną macierz uwagi.
+        
+        Wejście: heads [B, H, N, N] - macierze uwagi z każdej głowy (H głów).
+        Wyjście: A [B, N, N] - pojedyncza macierz uwagi po agregacji.
+        """
+        # Obsługa przypadku z jedną głową: wybieramy tę głowę
         if self.n_heads == 1:
             A = heads[:, 0]
+        # Średnia arytmetyczna wszystkich głów: uśrednia wagi uwagi z każdej głowy
         elif self.head_agg == "mean":
             A = heads.mean(dim=1)
+        # Suma wszystkich głów: sumuje wagi z każdej głowy
         elif self.head_agg == "sum":
             A = heads.sum(dim=1)
+        # Maksimum po głowach: wybiera największą wagę uwagi dla każdej pary cech
         else:
             A, _ = heads.max(dim=1)
-        if self.attn_norm == "row_softmax" and self.head_agg in {"sum", "max"} and self.mode != "diagonal":
+        # Renormalizacja dla sum i max: zapewnia, że wiersze sumują się do 1
+        # (dla "mean" nie jest potrzebna, bo średnia z znormalizowanych macierzy jest już znormalizowana)
+        # row_softmax był już zastosowany wcześniej, ale sum/max może zmienić sumy wierszy
+        if self.head_agg in {"sum", "max"}:
             A = A / A.sum(dim=-1, keepdim=True).clamp_min(1e-8)
         return A
 
     def _diagnostics(self, A: th.Tensor, x: th.Tensor) -> None:
         with th.no_grad():
-            if self.mode == "diagonal":
-                diag = th.diagonal(A, dim1=1, dim2=2)
-                metric = F.softmax(diag, dim=-1)
-            else:
-                vec = A.mean(dim=1)
-                metric = vec / vec.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+            # Używamy średniej po wierszach macierzy uwagi
+            vec = A.mean(dim=1)
+            metric = vec / vec.sum(dim=-1, keepdim=True).clamp_min(1e-8)
             contrib = A.abs().sum(dim=1) * x.abs()
             contrib = contrib / contrib.sum(dim=-1, keepdim=True).clamp_min(1e-8)
             self.metric_importance = metric.detach()
@@ -238,19 +262,52 @@ class AttentionExtractor(BaseFeaturesExtractor):
             self.total_steps += 1
 
     def _forward_batch(self, x: th.Tensor) -> th.Tensor:
+        """
+        Główna funkcja forward dla batcha obserwacji.
+        
+        Wejście: x [B, N] - batch obserwacji, gdzie N to liczba cech.
+        Wyjście: out [B, N] lub [B, final_out_dim] - przekształcone cechy.
+        """
+        # Maska aktywnych cech: wyłącza niektóre cechy (ustawiane zewnętrznie)
+        # Pomaga w eksperymentach z selekcją cech - maskowane cechy są zerowane
         if hasattr(self, "active_mask"):
             x = x * self.active_mask.to(x.device).view(1, -1)
+        
+        # Krok 1: Tworzenie osadzeń dla każdej cechy
+        # x [B, N] -> E [B, N, d_embed]
         E = self._embed(x)
+        
+        # Krok 2: Obliczanie logitów uwagi i normalizacja
+        # E [B, N, d_embed] -> heads [B, H, N, N] (H głów uwagi)
         heads = self._normalize_heads(self._attention_logits(E))
+        
+        # Krok 3: Agregacja wielu głów w jedną macierz uwagi
+        # heads [B, H, N, N] -> A [B, N, N]
         A = self._aggregate_heads(heads)
+        
+        # Zapis macierzy uwagi do późniejszej analizy (bez gradientu)
         self.attn_matrix = A.detach()
+        
+        # Krok 4: Mieszanie cech przez macierz uwagi
+        # A [B, N, N] * x [B, N, 1] -> mixed [B, N]
+        # Każda cecha wyjściowa to ważona suma wszystkich cech wejściowych
         mixed = th.bmm(A, x.unsqueeze(-1)).squeeze(-1)
+        
+        # Krok 5: Połączenie rezydualne (domyślnie wyłączone, we wszystkich eksperymentach było wyłączone aby Attention bezpośrednio wpływała na wejscie do sieci LSTM)
+        # Dodaje oryginalne wejście z wagą, co pomaga w uczeniu głębokich sieci
         if self.use_residual:
             mixed = x + self.residual_weight * mixed
+        
+        # Krok 6: Zbieranie statystyk diagnostycznych (ważność cech, wkłady)
+        # Działa w trybie no_grad, nie wpływa na gradienty
         self._diagnostics(A, x)
+        
+        # Krok 7: Post-processing wyjścia
         if self.post_proj is not None:
+            # Jeśli final_out_dim != N: projekcja do innego wymiaru + opcjonalna aktywacja
             out = self.post_proj(mixed)
         else:
+            # Jeśli final_out_dim == N: opcjonalna normalizacja i aktywacja bezpośrednio na mixed
             out = mixed
             if self.out_ln is not None:
                 out = self.out_ln(out)
@@ -288,8 +345,6 @@ def train_model(env, args):
         alpha_mode="global",
         alpha_init=0.5,
         learn_alpha=False,
-        mode="generalized",
-        attn_norm="row_softmax",
         use_posenc=True,
         use_content_embed=False,
         attn_temp=1.2,
@@ -323,17 +378,17 @@ def train_model(env, args):
                 n_steps=1024,
                 batch_size=256,                    
             n_epochs=10,
-            learning_rate=0.00003,
+            learning_rate=0.0003,
             vf_coef=1,
             clip_range_vf=10.0,
             max_grad_norm=1,
             gamma=0.95,
             ent_coef=0.001,
-            clip_range=0.05,
+            clip_range=0.1,
             verbose=1,
              seed=int(args.seed),
              #policy_kwargs=policy_kwargs,
-             tensorboard_log='./att_new_settings'
+             tensorboard_log='./output_malota/att_new_settings'
             )
     elif args.policy == 'MlpPolicy':
         model = PPO(
@@ -355,7 +410,7 @@ def train_model(env, args):
                         verbose=1,
                         seed=int(args.seed),
                         #policy_kwargs=policy_kwargs,
-                        tensorboard_log="./att_mlp")
+                        tensorboard_log="./output_malota/gawrl_mlp")
     return model
 
 
@@ -372,3 +427,5 @@ def train_model(env, args):
                         # verbose=1,
                         #     seed=int(args.seed) if args.seed else 42,
                         #     tensorboard_log='./output_malota/'
+
+
