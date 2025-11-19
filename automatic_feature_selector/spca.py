@@ -8,7 +8,7 @@ def _winsorize(Z: np.ndarray, clip: float = 5.0) -> np.ndarray:
     return np.clip(Z, -clip, clip)
 
 def _zscore_cols_robust(X: np.ndarray, clip: Optional[float] = 5.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    # standard z-score (your version is fine too); add optional winsorization
+    # standard z-score add optional winsorization
     mu = np.nanmean(X, axis=0, keepdims=True)
     Z = X - mu
     sd = np.nanstd(Z, axis=0, keepdims=True)
@@ -48,7 +48,6 @@ def spca_weights_improved(
     ok_std = prestd >= float(min_prestd)
     keep = ok_nz & ok_std
     if not np.any(keep):
-        # nothing passes; fall back to uniform tiny weights
         return np.ones(N, dtype=np.float32) / N, np.zeros((min(n_components, N), N), dtype=np.float32)
 
     Xk = X[:, keep]
