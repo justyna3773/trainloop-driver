@@ -31,9 +31,9 @@ class AttentionExtractor(BaseFeaturesExtractor):
         observation_space: Przestrzeń obserwacji `gym.spaces.Box`; ostatni wymiar to liczba cech (N).
         d_embed: Rozmiar wektorów osadzeń (embedding) dla każdej metryki.
         d_k: Rozmiar wektora zapytań/kluczy na głowę (head) uwagi.
-        n_heads: Liczba głów uwagi.
+        n_heads: Liczba głowic uwagi.
         attn_temp: Temperatura w normalizacji logitów uwagi (większa → „łagodniejszy” softmax).
-        head_agg: Agregacja głów: "mean" | "sum" | "max" (używane tylko, gdy nie ma head_logits).
+        head_agg: Agregacja głowic: "mean" | "sum" | "max".
         use_posenc: Czy dodawać uczone osadzenia pozycyjne cech (stałe P_idx).
         final_out_dim: Jeśli podane, rzutuje wyjście do tej liczby wymiarów (Linear + opcjonalna aktywacja).
         out_layernorm: Czy stosować LayerNorm na wyjściu (gdy final_out_dim nie jest ustawione).
